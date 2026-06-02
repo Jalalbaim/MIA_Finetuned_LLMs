@@ -142,6 +142,7 @@ def finetune(seed: int, n_members: int, device: torch.device) -> list[Path]:
 
     try:
         for epoch in range(1, max_epochs + 1):
+            print("Starting fine-tuning...")
             model.train()
             running_loss = 0.0
             t0 = time.time()
