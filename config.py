@@ -48,11 +48,12 @@ CORPUS_SIZES = [500, 2_000, 6_000]   # N_members values; N=6000 replaces N=8000
 #  Fine-tuning hyperparameters
 
 FINETUNE = dict(
-    optimiser    = "AdamW",
-    learning_rate= 5e-5,
-    batch_size   = 8,
-    weight_decay = 0.01,       # AdamW default; not varied
-    warmup_steps = 0,          # no warmup (small dataset regime)
+    optimiser        = "AdamW",
+    learning_rate    = 5e-5,
+    batch_size       = 2,        # actual mini-batch per GPU step
+    grad_accum_steps = 4,        # effective batch = batch_size × grad_accum_steps = 8
+    weight_decay     = 0.01,
+    warmup_steps     = 0,
 )
 
 # Epoch sweep — primary axis for R1 → R2 regime characterisation (RQ3)

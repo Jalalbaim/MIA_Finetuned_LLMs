@@ -119,9 +119,13 @@ def finetune(seed: int, n_members: int, device: torch.device) -> list[Path]:
         weight_decay=FINETUNE["weight_decay"],
     )
 
-    max_epochs = max(EPOCH_SWEEP)
-    epoch_set  = set(EPOCH_SWEEP)
+    max_epochs  = max(EPOCH_SWEEP)
+    epoch_set   = set(EPOCH_SWEEP)
+    grad_accum  = FINETUNE.get("grad_accum_steps", 1)
     saved: list[Path] = []
+
+    # fp16 AMP scaler — enabled only on CUDA, no-op on CPU
+    scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda"))
 
     # CSV log
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -130,7 +134,9 @@ def finetune(seed: int, n_members: int, device: torch.device) -> list[Path]:
     writer   = csv.writer(log_fh)
     writer.writerow(["epoch", "train_loss", "elapsed_s"])
 
-    print(f"  Batches/epoch: {len(loader)}  |  Max epochs: {max_epochs}  |  Device: {device}")
+    eff_batch = FINETUNE["batch_size"] * grad_accum
+    print(f"  Batches/epoch: {len(loader)}  |  Grad accum: {grad_accum}  |  "
+          f"Eff. batch: {eff_batch}  |  Max epochs: {max_epochs}  |  Device: {device}")
     print(f"  {'epoch':>5}  {'loss':>9}  {'time':>8}  note")
     print(f"  {'-----':>5}  {'---------':>9}  {'--------':>8}")
 
@@ -139,14 +145,20 @@ def finetune(seed: int, n_members: int, device: torch.device) -> list[Path]:
             model.train()
             running_loss = 0.0
             t0 = time.time()
+            optimizer.zero_grad()
 
-            for batch in loader:
+            for step, batch in enumerate(loader):
                 batch = {k: v.to(device) for k, v in batch.items()}
-                optimizer.zero_grad()
-                loss = model(**batch).loss
-                loss.backward()
-                optimizer.step()
+                with torch.autocast(device_type=device.type, dtype=torch.float16,
+                                    enabled=(device.type == "cuda")):
+                    loss = model(**batch).loss
+                scaler.scale(loss / grad_accum).backward()
                 running_loss += loss.item()
+
+                if (step + 1) % grad_accum == 0 or (step + 1) == len(loader):
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
 
             avg_loss = running_loss / len(loader)
             elapsed  = time.time() - t0
