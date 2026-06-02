@@ -6,3 +6,5 @@ CLAUDE.md
 checkpoints/
 
 __pycache__/
+
+.pytest_cache/
