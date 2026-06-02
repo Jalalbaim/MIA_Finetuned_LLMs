@@ -217,6 +217,7 @@ def main() -> None:
             print(f"\n{'='*64}")
             print(f"  Run {combo}/{n_combos}  |  seed={seed}  N={n:,}")
             print(f"{'='*64}")
+            print(f"Starting fine-tuning for seed={seed} and N={n:,} ...")
             ckpts = finetune(seed, n, device)
             all_saved.extend(ckpts)
 
