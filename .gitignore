@@ -2,3 +2,7 @@
 .claude/
 MIA_xp.pdf
 CLAUDE.md
+
+checkpoints/
+
+__pycache__/
