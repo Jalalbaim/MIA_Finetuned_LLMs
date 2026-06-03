@@ -8,3 +8,5 @@ checkpoints/
 __pycache__/
 
 .pytest_cache/
+
+xp_avancement.txt
