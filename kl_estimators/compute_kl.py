@@ -62,8 +62,9 @@ def get_full_logprobs(
         torch.arange(len(shift_labels), device=device), shift_labels
     ]                                                  # (T,)
 
-    # sum, not mean — KL estimator requires full log-likelihood
-    return token_log_probs.sum().item(), token_log_probs, shifted_logits
+    # mean per token — makes KL independent of sequence length
+    seq_logprob_mean = token_log_probs.mean().item()
+    return seq_logprob_mean, token_log_probs, shifted_logits
 
 
 # Estimator 1 — Sequence-level KL
@@ -100,6 +101,9 @@ def compute_kl_seq(
             f"{'!'*60}\n"
         )
 
+    if abs(kl_seq) > 20:
+        print(f"WARNING: kl_seq={kl_seq:.2f} is implausibly large. Check normalisation.")
+
     return kl_seq, contributions, mean_lp_ft, mean_lp_pre
 
 
@@ -126,7 +130,8 @@ def compute_kl_tok(
         p     = log_p.exp()                         # (T, V)
 
         # KL(p ∥ q) = Σ p·(log p − log q); nan_to_num handles 0·(−∞) → 0
-        kl_x = (p * (log_p - log_q)).nan_to_num(0.0).sum().item()
+        T = log_p.shape[0]  # number of token positions
+        kl_x = (p * (log_p - log_q)).nan_to_num(0.0).sum().item() / T
         kl_values.append(kl_x)
 
     return sum(kl_values) / len(kl_values)
