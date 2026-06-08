@@ -24,6 +24,7 @@ sys.path.insert(0, str(_SIG_DIR))
 from config import (
     CORPUS_SIZES,
     CKPT_DIR,
+    PRETRAINED_CKPT,
     EPOCH_SWEEP,
     MAX_SEQ_LEN,
     MIN_K_FRACTION,
@@ -185,10 +186,10 @@ def main() -> None:
             print(f"\n{'#'*60}")
             print(f"  seed={seed}  N={n:,}  — loading shared pretrained reference ...")
 
-            tokenizer = AutoTokenizer.from_pretrained(str(CKPT_DIR / "gpt_neo_pretrained"))
+            tokenizer = AutoTokenizer.from_pretrained(PRETRAINED_CKPT)
             tokenizer.pad_token = tokenizer.eos_token
 
-            model_pre = _load_model(CKPT_DIR / "gpt_neo_pretrained", device)
+            model_pre = _load_model(PRETRAINED_CKPT, device)
 
             for epoch in epochs:
                 compute_signals_for_checkpoint(
