@@ -10,7 +10,7 @@ SEEDS = [0, 1, 2]
 
 ROOT          = Path(__file__).parent.resolve()
 DATA_DIR      = ROOT / "raw_data" # Raw Enronmail data (if needed)
-CKPT_DIR      = ROOT / "checkpoints"
+CKPT_DIR      = "/kaggle/input/datasets/mohamedjalalbaim/gpt-neo-125m-finetuned-enron/checkpoints"
 RESULTS_DIR   = ROOT / "results"
 FIGURES_DIR   = ROOT / "figures"
 LOG_DIR       = ROOT / "logs"
