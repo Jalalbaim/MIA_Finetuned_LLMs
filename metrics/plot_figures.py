@@ -21,9 +21,9 @@ from config import (
     RESULTS_DIR, FIGURES_DIR,
 )
 
-# ---------------------------------------------------------------------------
+
 # Constants
-# ---------------------------------------------------------------------------
+
 DATA_PATH = RESULTS_DIR / "metrics_all.csv"
 STYLE = "seaborn-v0_8-whitegrid"
 
@@ -51,9 +51,9 @@ def fig_path(n: int) -> Path:
     return FIGURES_DIR / f"{_FIG_STEMS[n]}.{FIG_FORMAT}"
 
 
-# ---------------------------------------------------------------------------
+
 # Helpers
-# ---------------------------------------------------------------------------
+
 
 def _agg_cols(raw_cols):
     """Flatten MultiIndex column list after groupby().agg(['mean','std'])."""
@@ -79,9 +79,9 @@ def _cat_line(ax, x_labels, y_mean, y_std, color,
     ax.set_xticklabels([str(x) for x in x_labels])
 
 
-# ---------------------------------------------------------------------------
+
 # Figure functions
-# ---------------------------------------------------------------------------
+
 
 def fig1_bound_validity(df: pd.DataFrame):
     """RQ1/RQ2 – Empirical advantage vs BH and Pinsker bounds over KL."""
@@ -369,9 +369,9 @@ def fig8_tightness_heatmap(df: pd.DataFrame):
     return out
 
 
-# ---------------------------------------------------------------------------
+
 # Main
-# ---------------------------------------------------------------------------
+
 
 def main():
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)

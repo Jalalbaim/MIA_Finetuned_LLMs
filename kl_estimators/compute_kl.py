@@ -1,9 +1,4 @@
 """
-
-  KL̂_seq — sequence-level Monte Carlo estimator (mean of per-sequence log-ratios)
-  KL̂_tok — exact token-level KL (averaged over E, exact over the full vocabulary)
-
-Usage:
     python kl_estimators/compute_kl.py
     python kl_estimators/compute_kl.py --seed 0 --n 2000
     python kl_estimators/compute_kl.py --seed 0 --n 2000 --epoch 5
