@@ -298,6 +298,11 @@ def main() -> None:
 
     for seed in seeds:
         for n in ns:
+            if seed == 0 and n == 2000:
+                print(f"\n{'#'*60}")
+                print(f"  [skip] seed=0 N=2,000 — excluded for all epochs.")
+                continue
+
             print(f"\n{'#'*60}")
             print(f"  seed={seed}  N={n:,}  — loading shared pretrained reference ...")
 
