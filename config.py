@@ -10,7 +10,7 @@ SEEDS = [0, 1, 2]
 
 ROOT          = Path(__file__).parent.resolve()
 DATA_DIR      = ROOT / "raw_data" # Raw Enronmail data (if needed)
-CKPT_DIR      = "/kaggle/input/datasets/mohamedjalalbaim/gpt-neo-125m-finetuned-enron/checkpoints"
+CKPT_DIR      = Path("/kaggle/input/datasets/mohamedjalalbaim/gpt-neo-125m-finetuned-enron/checkpoints")
 RESULTS_DIR   = ROOT / "results"
 FIGURES_DIR   = ROOT / "figures"
 LOG_DIR       = ROOT / "logs"
@@ -26,7 +26,7 @@ POOL_FILE     = DATA_DIR / "pool.jsonl"
 SPLIT_TEMPLATE = DATA_DIR / "{split}_N{n}_seed{seed}.jsonl"
 
 # pretrained reference model saved once (Step 3)
-PRETRAINED_CKPT = "/kaggle/input/datasets/mohamedjalalbaim/gpt-neo-125m-finetuned-enron/checkpoints/gpt_neo_pretrained"
+PRETRAINED_CKPT = Path("/kaggle/input/datasets/mohamedjalalbaim/gpt-neo-125m-finetuned-enron/checkpoints/gpt_neo_pretrained")
 
 #  Model
 
