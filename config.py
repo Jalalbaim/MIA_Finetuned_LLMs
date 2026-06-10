@@ -10,7 +10,8 @@ SEEDS = [0, 1, 2]
 
 ROOT          = Path(__file__).parent.resolve()
 DATA_DIR      = ROOT / "raw_data" # Raw Enronmail data (if needed)
-CKPT_DIR      = Path("/kaggle/input/datasets/mohamedjalalbaim/gpt-neo-125m-finetuned-enron/checkpoints")
+#CKPT_DIR      = Path("/kaggle/input/datasets/mohamedjalalbaim/gpt-neo-125m-finetuned-enron/checkpoints")
+CKPT_DIR      = ROOT / "checkpoints"  # Local checkpoint directory for fine-tuning runs
 RESULTS_DIR   = ROOT / "results"
 FIGURES_DIR   = ROOT / "figures"
 LOG_DIR       = ROOT / "logs"
@@ -26,8 +27,8 @@ POOL_FILE     = DATA_DIR / "pool.jsonl"
 SPLIT_TEMPLATE = DATA_DIR / "{split}_N{n}_seed{seed}.jsonl"
 
 # pretrained reference model saved once (Step 3)
-PRETRAINED_CKPT = Path("/kaggle/input/datasets/mohamedjalalbaim/gpt-neo-125m-finetuned-enron/checkpoints/gpt_neo_pretrained")
-
+# PRETRAINED_CKPT = Path("/kaggle/input/datasets/mohamedjalalbaim/gpt-neo-125m-finetuned-enron/checkpoints/gpt_neo_pretrained")
+PRETRAINED_CKPT = CKPT_DIR / "gpt_neo_pretrained"
 #  Model
 
 MODEL_NAME = "EleutherAI/gpt-neo-125m"   # HuggingFace model id
@@ -121,9 +122,8 @@ RESULTS_COLUMNS = [
     "seed", "n_members", "epochs", "signal",
     "auroc", "tpr_at_fpr_1pct", "tpr_at_fpr_01pct",
     "adv", "tv_empirical",
-    "kl_seq", "kl_tok",
+    "kl_seq",
     "pinsker_seq", "bh_seq",
-    "pinsker_tok", "bh_tok",
     "dp_epsilon",        # None for non-DP runs
     "perplexity",        # None for non-DP runs
 ]

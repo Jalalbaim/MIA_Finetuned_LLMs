@@ -34,16 +34,19 @@ PALETTE_SIGNALS = {
     "zlib": "#4daf4a",
     "mink": "#ff7f00",
 }
+PALETTE_SEEDS = {0: "#984ea3", 1: "#ff7f00", 2: "#4daf4a"}
 
 _FIG_STEMS = {
     1: "fig1_bound_validity",
     2: "fig2_pinsker_vs_bh",
-    3: "fig3_token_vs_sequence",
     4: "fig4_dp_efficacy",
     5: "fig5_corpus_size_sweep",
     6: "fig6_signal_comparison",
     7: "fig7_tpr_at_fpr",
     8: "fig8_tightness_heatmap",
+    9: "fig9_adv_vs_bounds_per_epoch",
+    10: "fig10_adv_ratio_per_epoch",
+    11: "fig11_seed_comparison",
 }
 
 
@@ -155,36 +158,6 @@ def fig2_pinsker_vs_bh(df: pd.DataFrame):
         ax.legend()
         fig.tight_layout()
         out = fig_path(2)
-        fig.savefig(out, dpi=FIG_DPI)
-        plt.close(fig)
-    return out
-
-
-def fig3_token_vs_sequence(df: pd.DataFrame):
-    """RQ2 – Token-level vs sequence-level bounds scatter."""
-    sub = df[(df["signal"] == PRIMARY_SIGNAL) & (df["seed"] == 0)].copy()
-    if sub.empty:
-        print("[Fig 3] No matching data – skipping.")
-        return None
-
-    with plt.style.context(STYLE):
-        fig, ax = plt.subplots(figsize=(6, 6))
-        ax.scatter(sub["adv"], sub["bh_seq"],  color="red",    marker="o",
-                   s=70, label="(adv, BH-seq)", zorder=3)
-        ax.scatter(sub["adv"], sub["bh_tok"],  color="orange", marker="s",
-                   s=70, label="(adv, BH-tok)", zorder=3)
-
-        all_vals = pd.concat([sub["adv"], sub["bh_seq"], sub["bh_tok"]]).dropna()
-        lo = all_vals.min() * 0.9
-        hi = all_vals.max() * 1.1
-        ax.plot([lo, hi], [lo, hi], "k--", lw=1.5, label="y = x (perfect bound)")
-
-        ax.set_xlabel("Empirical Adv̂")
-        ax.set_ylabel("Bound Value")
-        ax.set_title("Token-level vs Sequence-level Bounds")
-        ax.legend()
-        fig.tight_layout()
-        out = fig_path(3)
         fig.savefig(out, dpi=FIG_DPI)
         plt.close(fig)
     return out
@@ -370,6 +343,168 @@ def fig8_tightness_heatmap(df: pd.DataFrame):
 
 
 
+def fig9_adv_vs_bounds_per_epoch(df: pd.DataFrame):
+    """Empirical advantage vs BH and Pinsker bounds per epoch, one panel per corpus size."""
+    sub = df[df["signal"] == PRIMARY_SIGNAL].copy()
+    if sub.empty:
+        print("[Fig 9] No matching data – skipping.")
+        return None
+
+    ns = sorted(sub["n_members"].unique())
+    all_epochs = sorted(sub["epochs"].unique())
+    ncols = len(ns)
+
+    with plt.style.context(STYLE):
+        fig, axes = plt.subplots(1, ncols, figsize=(5 * ncols, 5), sharey=False)
+        if ncols == 1:
+            axes = [axes]
+
+        for ax, nm in zip(axes, ns):
+            grp = sub[sub["n_members"] == nm]
+            agg = (
+                grp.groupby("epochs")[["adv", "bh_seq", "pinsker_seq"]]
+                .agg(["mean", "std"])
+                .reindex(all_epochs)
+                .reset_index()
+            )
+            agg.columns = ["epochs"] + _agg_cols(agg.columns[1:])
+
+            for col, color, ls, label in [
+                ("adv",         "black", "-",  "Empirical Adv̂"),
+                ("bh_seq",      "red",   "--", "BH bound"),
+                ("pinsker_seq", "blue",  ":",  "Pinsker bound"),
+            ]:
+                _cat_line(
+                    ax, all_epochs,
+                    agg[f"{col}_mean"], agg[f"{col}_std"],
+                    color, ls=ls, label=label,
+                )
+
+            ax.axhline(1.0, color="gray", ls="--", lw=1, alpha=0.7,
+                       label="Vacuous (y=1)")
+            ax.set_xlabel("Epochs")
+            ax.set_ylabel("Value")
+            ax.set_title(f"N={nm:,}")
+            ax.legend(fontsize=8)
+
+        fig.suptitle(
+            "Empirical Advantage vs BH and Pinsker Bounds per Epoch",
+            fontsize=13, y=1.02,
+        )
+        fig.tight_layout()
+        out = fig_path(9)
+        fig.savefig(out, dpi=FIG_DPI, bbox_inches="tight")
+        plt.close(fig)
+    return out
+
+
+def fig10_adv_ratio_per_epoch(df: pd.DataFrame):
+    """Tightness ratios Adv/BH and Adv/Pinsker per epoch, one panel per corpus size."""
+    sub = df[df["signal"] == PRIMARY_SIGNAL].copy()
+    if sub.empty:
+        print("[Fig 10] No matching data – skipping.")
+        return None
+
+    sub["ratio_bh"]      = sub["adv"] / sub["bh_seq"].replace(0, np.nan)
+    sub["ratio_pinsker"] = sub["adv"] / sub["pinsker_seq"].replace(0, np.nan)
+
+    ns = sorted(sub["n_members"].unique())
+    all_epochs = sorted(sub["epochs"].unique())
+    ncols = len(ns)
+
+    with plt.style.context(STYLE):
+        fig, axes = plt.subplots(1, ncols, figsize=(5 * ncols, 5), sharey=False)
+        if ncols == 1:
+            axes = [axes]
+
+        for ax, nm in zip(axes, ns):
+            grp = sub[sub["n_members"] == nm]
+            agg = (
+                grp.groupby("epochs")[["ratio_bh", "ratio_pinsker"]]
+                .agg(["mean", "std"])
+                .reindex(all_epochs)
+                .reset_index()
+            )
+            agg.columns = ["epochs"] + _agg_cols(agg.columns[1:])
+
+            for col, color, ls, label in [
+                ("ratio_bh",      "red",  "-",  "Adv / BH bound"),
+                ("ratio_pinsker", "blue", "--", "Adv / Pinsker bound"),
+            ]:
+                _cat_line(
+                    ax, all_epochs,
+                    agg[f"{col}_mean"], agg[f"{col}_std"],
+                    color, ls=ls, label=label,
+                )
+
+            ax.axhline(1.0, color="gray", ls="--", lw=1, alpha=0.7,
+                       label="Ratio = 1 (tight)")
+            ax.set_xlabel("Epochs")
+            ax.set_ylabel("Adv / Bound")
+            ax.set_title(f"N={nm:,}")
+            ax.legend(fontsize=8)
+
+        fig.suptitle(
+            "Empirical Advantage / BH and Pinsker Bounds per Epoch",
+            fontsize=13, y=1.02,
+        )
+        fig.tight_layout()
+        out = fig_path(10)
+        fig.savefig(out, dpi=FIG_DPI, bbox_inches="tight")
+        plt.close(fig)
+    return out
+
+
+def fig11_seed_comparison(df: pd.DataFrame):
+    """Cross-seed comparison – Empirical advantage vs epochs, one panel per
+    corpus size, one curve per seed (run-to-run variance check)."""
+    sub = df[df["signal"] == PRIMARY_SIGNAL].copy()
+    if sub.empty:
+        print("[Fig 11] No matching data – skipping.")
+        return None
+
+    ns = sorted(sub["n_members"].unique())
+    all_epochs = sorted(sub["epochs"].unique())
+    ncols = len(ns)
+
+    with plt.style.context(STYLE):
+        fig, axes = plt.subplots(1, ncols, figsize=(5 * ncols, 5), sharey=True)
+        if ncols == 1:
+            axes = [axes]
+
+        for ax, nm in zip(axes, ns):
+            grp = sub[sub["n_members"] == nm]
+            for seed, sgrp in grp.groupby("seed"):
+                color = PALETTE_SEEDS.get(seed, "gray")
+                sgrp_sorted = sgrp.sort_values("epochs")
+                ep = sgrp_sorted["epochs"].tolist()
+                _cat_line(ax, ep, sgrp_sorted["adv"].tolist(), None,
+                          color, label=f"Empiricalseed={seed}", marker="o")
+                _cat_line(ax, ep, sgrp_sorted["bh_seq"].tolist(), None,
+                          color, label=f"BH's seed={seed}", marker="*")
+                _cat_line(ax, ep, sgrp_sorted["pinsker_seq"].tolist(), None,
+                          color, label=f"Pinsker's seed={seed}", marker="^")
+
+            xs = np.arange(len(all_epochs))
+            ax.set_xticks(xs)
+            ax.set_xticklabels([str(e) for e in all_epochs])
+            ax.set_xlabel("Epochs")
+            ax.set_ylabel("Empirical Adv̂")
+            ax.set_title(f"N={nm:,}")
+            ax.legend(title="Seed", fontsize=8)
+
+        fig.suptitle(
+            "Cross-Seed Comparison: Empirical Advantage vs Epochs",
+            fontsize=13, y=1.02,
+        )
+        fig.tight_layout()
+        out = fig_path(11)
+        fig.savefig(out, dpi=FIG_DPI, bbox_inches="tight")
+        plt.close(fig)
+    return out
+
+
+
 # Main
 
 
@@ -384,12 +519,14 @@ def main():
     figure_fns = [
         (1, fig1_bound_validity),
         (2, fig2_pinsker_vs_bh),
-        (3, fig3_token_vs_sequence),
         (4, fig4_dp_efficacy),
         (5, fig5_corpus_size_sweep),
         (6, fig6_signal_comparison),
         (7, fig7_tpr_at_fpr),
         (8, fig8_tightness_heatmap),
+        (9, fig9_adv_vs_bounds_per_epoch),
+        (10, fig10_adv_ratio_per_epoch),
+        (11, fig11_seed_comparison),
     ]
 
     saved, skipped, failed = [], [], []

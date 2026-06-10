@@ -98,21 +98,52 @@ def compute_tv_empirical(
     return float(0.5 * np.sum(np.abs(hist_m - hist_nm)) * bin_width)
 
 
+def compute_kl_score_space(
+    scores_members: list[float],
+    scores_nonmembers: list[float],
+    n_bins: int = TV_N_BINS,
+    eps: float = 1e-8,
+) -> float:
+    """KL(L(S|member) || L(S|non-member)) — the divergence Theorem 1.1 actually
+    bounds TV with, estimated directly from the attacker's score distributions.
+    Provably non-negative (it's a KL between two empirical 1-D densities),
+    unlike a generator-level KL(P_ft||P_pre) estimated by averaging
+    log-likelihood ratios over a fixed reference set, which has no such
+    guarantee and goes negative once the finetuned model overfits and starts
+    losing likelihood on held-out text relative to the pretrained baseline."""
+    m  = np.array(scores_members,    dtype=float)
+    nm = np.array(scores_nonmembers, dtype=float)
+    lo = min(m.min(), nm.min())
+    hi = max(m.max(), nm.max())
+    if hi == lo:
+        return 0.0
+    bins = np.linspace(lo, hi, n_bins + 1)
+    p, _ = np.histogram(m,  bins=bins, density=True)
+    q, _ = np.histogram(nm, bins=bins, density=True)
+    bin_width = bins[1] - bins[0]
+    p = p * bin_width + eps
+    q = q * bin_width + eps
+    p = p / p.sum()
+    q = q / q.sum()
+    return float(np.sum(p * np.log(p / q)))
+
+
+def compute_bounds_from_kl(kl: float) -> tuple[float, float]:
+    """Pinsker and Bretagnolle-Huber bounds on TV from a (non-negative) KL."""
+    kl = max(kl, 0.0)
+    pinsker = math.sqrt(kl / 2.0)
+    bh      = math.sqrt(1.0 - math.exp(-kl))
+    return pinsker, bh
+
+
 def compute_metrics_for_checkpoint(
     seed: int, n_members: int, epoch: int
 ) -> list[dict] | None:
     signals_path = RESULTS_DIR / f"signals_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
-    kl_path      = RESULTS_DIR / f"kl_N{n_members}_seed{seed}_epoch{epoch}.json"
 
     if not signals_path.exists():
         print(f"  [skip] Missing signals: {signals_path.name}")
         return None
-    if not kl_path.exists():
-        print(f"  [skip] Missing KL:      {kl_path.name}")
-        return None
-
-    with kl_path.open(encoding="utf-8") as fh:
-        kl = json.load(fh)
 
     all_scores = load_scores(signals_path)
     results: list[dict] = []
@@ -130,9 +161,12 @@ def compute_metrics_for_checkpoint(
         adv       = compute_advantage(sc_m, sc_nm)
         tv_emp    = compute_tv_empirical(sc_m, sc_nm)
 
-        bh_seq      = kl["bh_seq"]
-        pinsker_seq  = kl["pinsker_seq"]
-        adv_over_bound = adv / max(bh_seq, pinsker_seq) if bh_seq != 0.0 else float("nan")
+        # Bound TV(L(S|member), L(S|non-member)) — the quantity Theorem 1.1
+        # actually relates to the attacker's advantage — via its own KL,
+        # estimated directly from the score distributions (always >= 0).
+        kl_seq            = compute_kl_score_space(sc_m, sc_nm)
+        pinsker_seq, bh_seq = compute_bounds_from_kl(kl_seq)
+        adv_over_bound    = adv / max(bh_seq, pinsker_seq) if bh_seq != 0.0 else float("nan")
 
         row = {
             "seed":             seed,
@@ -144,12 +178,9 @@ def compute_metrics_for_checkpoint(
             "tpr_at_fpr_01pct": tpr_01pct,
             "adv":              adv,
             "tv_empirical":     tv_emp,
-            "kl_seq":           kl["kl_seq"],
-            "kl_tok":           kl["kl_tok"],
-            "pinsker_seq":      kl["pinsker_seq"],
+            "kl_seq":           kl_seq,
+            "pinsker_seq":      pinsker_seq,
             "bh_seq":           bh_seq,
-            "pinsker_tok":      kl["pinsker_tok"],
-            "bh_tok":           kl["bh_tok"],
             "dp_epsilon":       None,
             "perplexity":       None,
             "adv_over_bound_seq":  adv_over_bound,
