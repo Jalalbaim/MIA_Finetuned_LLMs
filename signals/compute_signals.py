@@ -71,6 +71,11 @@ def _load_model(ckpt_path: Path, device: torch.device) -> AutoModelForCausalLM:
     return model
 
 
+def _fmt_eps(eps: float) -> str:
+    """Format epsilon for filenames: 1.0 -> '1', 0.5 -> '0.5'."""
+    return f"{eps:g}"
+
+
 def compute_signals_for_checkpoint(
     seed: int,
     n_members: int,
@@ -78,12 +83,19 @@ def compute_signals_for_checkpoint(
     device: torch.device,
     model_pre: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
+    dp_eps: float | None = None,
 ) -> None:
-    ckpt_name = f"gpt_neo_ft_N{n_members}_seed{seed}_epoch{epoch}"
+    if dp_eps is not None:
+        ckpt_name = f"gpt_neo_ft_dp_eps{_fmt_eps(dp_eps)}_N{n_members}_seed{seed}_epoch{epoch}"
+        out_name  = f"signals_dp_eps{_fmt_eps(dp_eps)}_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
+    else:
+        ckpt_name = f"gpt_neo_ft_N{n_members}_seed{seed}_epoch{epoch}"
+        out_name  = f"signals_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
+
     ckpt_path = CKPT_DIR / ckpt_name
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = RESULTS_DIR / f"signals_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
+    out_path = RESULTS_DIR / out_name
 
     if out_path.exists():
         print(f"  [skip] {out_path.name} already exists.")
@@ -166,6 +178,9 @@ def main() -> None:
                         help="Single N_members to run (default: all CORPUS_SIZES)")
     parser.add_argument("--epoch", type=int, default=None,
                         help="Single epoch to run (default: all EPOCH_SWEEP)")
+    parser.add_argument("--dp_eps", type=float, default=None,
+                        help="DP privacy budget — read DP checkpoint and tag output "
+                             "with a 'dp_eps{eps}' suffix (default: non-DP)")
     args = parser.parse_args()
 
     seeds  = [args.seed]  if args.seed  is not None else SEEDS
@@ -178,6 +193,8 @@ def main() -> None:
     print(f"N values  : {ns}")
     print(f"Epochs    : {epochs}")
     print(f"Min-K frac: {MIN_K_FRACTION}")
+    if args.dp_eps is not None:
+        print(f"DP epsilon: {args.dp_eps}")
 
     t_wall = time.time()
 
@@ -199,6 +216,7 @@ def main() -> None:
                     device=device,
                     model_pre=model_pre,
                     tokenizer=tokenizer,
+                    dp_eps=args.dp_eps,
                 )
 
             del model_pre

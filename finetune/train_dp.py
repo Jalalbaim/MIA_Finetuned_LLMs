@@ -29,7 +29,7 @@ from config import (
     PRETRAINED_CKPT, CKPT_DIR, RESULTS_DIR, LOG_DIR,
 )
 from membership_assignment import load_split
-from train import EnronDataset
+from train import EnronDataset, save_pretrained_reference
 
 import torch
 import torch.nn as nn
@@ -277,6 +277,8 @@ def main() -> None:
     n_members  = args.n
     seed       = args.seed
     epochs     = args.epochs
+
+    save_pretrained_reference()
     delta      = 1.0 / n_members
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

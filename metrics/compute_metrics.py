@@ -7,6 +7,7 @@ Usage:
     python metrics/compute_metrics.py
 """
 
+import argparse
 import json
 import math
 import sys
@@ -23,6 +24,7 @@ sys.path.insert(0, str(_ROOT))
 from config import (
     ALL_SIGNALS,
     CORPUS_SIZES,
+    DP,
     EPOCH_SWEEP,
     FPR_THRESHOLDS,
     PRIMARY_SIGNAL,
@@ -33,6 +35,11 @@ from config import (
 )
 
 _SIGNAL_KEY = {s: f"s_{s}" for s in ALL_SIGNALS}
+
+
+def _fmt_eps(eps: float) -> str:
+    """Format epsilon for filenames: 1.0 -> '1', 0.5 -> '0.5'."""
+    return f"{eps:g}"
 
 
 def load_scores(signals_path: Path) -> dict[str, tuple[list[float], list[float]]]:
@@ -137,13 +144,25 @@ def compute_bounds_from_kl(kl: float) -> tuple[float, float]:
 
 
 def compute_metrics_for_checkpoint(
-    seed: int, n_members: int, epoch: int
+    seed: int, n_members: int, epoch: int, dp_eps: float | None = None
 ) -> list[dict] | None:
-    signals_path = RESULTS_DIR / f"signals_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
+    if dp_eps is not None:
+        signals_path = RESULTS_DIR / f"signals_dp_eps{_fmt_eps(dp_eps)}_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
+    else:
+        signals_path = RESULTS_DIR / f"signals_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
 
     if not signals_path.exists():
         print(f"  [skip] Missing signals: {signals_path.name}")
         return None
+
+    perplexity = None
+    if dp_eps is not None:
+        receipt_path = RESULTS_DIR / f"dp_receipt_eps{_fmt_eps(dp_eps)}_N{n_members}_seed{seed}.json"
+        if receipt_path.exists():
+            with receipt_path.open(encoding="utf-8") as fh:
+                perplexity = json.load(fh).get("perplexity")
+        else:
+            print(f"  [warn] Missing DP receipt: {receipt_path.name} — perplexity left as None")
 
     all_scores = load_scores(signals_path)
     results: list[dict] = []
@@ -181,8 +200,8 @@ def compute_metrics_for_checkpoint(
             "kl_seq":           kl_seq,
             "pinsker_seq":      pinsker_seq,
             "bh_seq":           bh_seq,
-            "dp_epsilon":       None,
-            "perplexity":       None,
+            "dp_epsilon":       dp_eps,
+            "perplexity":       perplexity,
             "adv_over_bound_seq":  adv_over_bound,
         }
         results.append(row)
@@ -208,26 +227,67 @@ def compute_metrics_for_checkpoint(
 
 
 def main() -> None:
-    all_rows: list[dict] = []
+    parser = argparse.ArgumentParser(
+        description="Compute MIA metrics for fine-tuned GPT-Neo checkpoints."
+    )
+    parser.add_argument("--seed",  type=int, default=None,
+                        help="Single seed (default: all SEEDS, or 0 with --dp_eps)")
+    parser.add_argument("--n",     type=int, default=None,
+                        help="Single N_members (default: all CORPUS_SIZES, or 6000 with --dp_eps)")
+    parser.add_argument("--epoch", type=int, default=None,
+                        help="Single epoch (default: all EPOCH_SWEEP, or DP['epochs'] with --dp_eps)")
+    parser.add_argument("--dp_eps", type=float, default=None,
+                        help="DP privacy budget — compute metrics for the DP checkpoint's "
+                             "signals file, tagging rows with dp_epsilon/perplexity")
+    args = parser.parse_args()
 
-    for seed in SEEDS:
-        for n in CORPUS_SIZES:
-            for epoch in EPOCH_SWEEP:
-                rows = compute_metrics_for_checkpoint(seed, n, epoch)
-                if rows:
-                    all_rows.extend(rows)
+    new_rows: list[dict] = []
 
-    if not all_rows:
+    if args.dp_eps is not None:
+        seed  = args.seed  if args.seed  is not None else 0
+        n     = args.n     if args.n     is not None else 6000
+        epoch = args.epoch if args.epoch is not None else DP["epochs"]
+        rows = compute_metrics_for_checkpoint(seed, n, epoch, dp_eps=args.dp_eps)
+        if rows:
+            new_rows.extend(rows)
+    else:
+        seeds  = [args.seed]  if args.seed  is not None else SEEDS
+        ns     = [args.n]     if args.n     is not None else CORPUS_SIZES
+        epochs = [args.epoch] if args.epoch is not None else EPOCH_SWEEP
+        for seed in seeds:
+            for n in ns:
+                for epoch in epochs:
+                    rows = compute_metrics_for_checkpoint(seed, n, epoch)
+                    if rows:
+                        new_rows.extend(rows)
+
+    if not new_rows:
         print("No results found — nothing to write.")
         return
 
     out_cols = RESULTS_COLUMNS + ["adv_over_bound_seq"]
-    df = pd.DataFrame(all_rows, columns=out_cols)
+    new_df = pd.DataFrame(new_rows, columns=out_cols)
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = RESULTS_DIR / "metrics_all.csv"
+
+    # Merge with any existing rows (e.g. non-DP rows when re-running with
+    # --dp_eps, or DP rows already appended when re-running the full sweep)
+    # so DP and non-DP results coexist with the same columns.
+    key_cols = ["seed", "n_members", "epochs", "signal", "dp_epsilon"]
+    if out_path.exists():
+        old_df = pd.read_csv(out_path)
+        df = pd.concat([old_df, new_df], ignore_index=True)
+        df = df.drop_duplicates(subset=key_cols, keep="last")
+        df = df.sort_values(
+            ["n_members", "seed", "epochs", "signal", "dp_epsilon"],
+            na_position="first",
+        ).reset_index(drop=True)
+    else:
+        df = new_df
+
     df.to_csv(out_path, index=False)
-    print(f"\nWrote {len(df):,} rows → {out_path}")
+    print(f"\nWrote {len(df):,} rows → {out_path}  ({len(new_df):,} new/updated)")
 
     # ── Summary table: PRIMARY_SIGNAL, seed=0, N=2000 ────────────────────────
     sub = df[
