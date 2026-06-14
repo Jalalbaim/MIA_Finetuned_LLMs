@@ -15,7 +15,6 @@ import sys
 import gc
 import json
 import math
-import shutil
 import time
 import argparse
 from pathlib import Path
@@ -80,6 +79,13 @@ def dp_ckpt_dir(eps: float, n_members: int, seed: int, epochs: int) -> Path:
 
 def dp_receipt_path(eps: float, n_members: int, seed: int) -> Path:
     return RESULTS_DIR / f"dp_receipt_eps{_fmt_eps(eps)}_N{n_members}_seed{seed}.json"
+
+
+def _final_ckpt_saved(ckpt_dir: Path) -> bool:
+    """True once train_dp's final save_pretrained has written the model
+    config to ckpt_dir -- distinguishes a fully-trained checkpoint from a
+    directory that only contains per-epoch subdirectories so far."""
+    return (ckpt_dir / "config.json").exists()
 
 
 # GPT-Neo tied-weights fix
@@ -276,7 +282,6 @@ def train_dp(
     print(f"  {'-----':>5}  {'---------':>9}  {'--------':>8}")
 
     ckpt_dir = dp_ckpt_dir(target_epsilon, n_members, seed, epochs)
-    epoch_ckpt_dir = ckpt_dir.parent / f"{ckpt_dir.name}_epoch_inprogress"
 
     avg_loss = float("nan")
     try:
@@ -309,13 +314,14 @@ def train_dp(
             writer.writerow([epoch, f"{avg_loss:.6f}", f"{elapsed:.1f}"])
             log_fh.flush()
 
-            # Per-epoch checkpoint: overwrite a single in-progress dir each
-            # epoch (using the still-wrapped module's underlying weights, via
-            # the GradSampleModule's _module) so a crash/OOM on a later epoch
-            # or epsilon doesn't lose this epoch's trained weights. Hooks
-            # stay attached -- save_pretrained only touches state_dict, not
-            # the per-parameter grad_sample attributes -- so training
-            # continues normally afterwards.
+            # Per-epoch checkpoint: save this epoch's weights to its own
+            # subdirectory (using the still-wrapped module's underlying
+            # weights, via the GradSampleModule's _module) so a crash/OOM on
+            # a later epoch or epsilon doesn't lose earlier epochs' work, and
+            # all epochs remain available afterwards. Hooks stay attached --
+            # save_pretrained only touches state_dict, not the per-parameter
+            # grad_sample attributes -- so training continues normally.
+            epoch_ckpt_dir = ckpt_dir / f"epoch{epoch}"
             epoch_ckpt_dir.mkdir(parents=True, exist_ok=True)
             model._module.save_pretrained(epoch_ckpt_dir)
             tokenizer.save_pretrained(epoch_ckpt_dir)
@@ -352,10 +358,6 @@ def train_dp(
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     ft_model.save_pretrained(ckpt_dir)
     tokenizer.save_pretrained(ckpt_dir)
-
-    # Final checkpoint is saved; the per-epoch safety copy is redundant.
-    if epoch_ckpt_dir.exists():
-        shutil.rmtree(epoch_ckpt_dir)
 
     return {
         "model": ft_model,
@@ -450,7 +452,7 @@ def main() -> None:
         ckpt_dir = dp_ckpt_dir(eps, n_members, seed, epochs)
         receipt_path = dp_receipt_path(eps, n_members, seed)
 
-        if ckpt_dir.exists() and receipt_path.exists():
+        if _final_ckpt_saved(ckpt_dir) and receipt_path.exists():
             print(f"  [skip] checkpoint + receipt already exist: {ckpt_dir.name}")
             with receipt_path.open(encoding="utf-8") as fh:
                 receipt = json.load(fh)
@@ -466,7 +468,7 @@ def main() -> None:
 
         t0 = time.time()
 
-        if ckpt_dir.exists():
+        if _final_ckpt_saved(ckpt_dir):
             print(f"  Checkpoint exists, skipping training: {ckpt_dir.name}")
             tokenizer = AutoTokenizer.from_pretrained(ckpt_dir)
             tokenizer.pad_token = tokenizer.eos_token
