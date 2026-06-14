@@ -12,8 +12,10 @@ Usage:
 """
 
 import sys
+import gc
 import json
 import math
+import shutil
 import time
 import argparse
 from pathlib import Path
@@ -273,6 +275,9 @@ def train_dp(
     print(f"  {'epoch':>5}  {'loss':>9}  {'time':>8}")
     print(f"  {'-----':>5}  {'---------':>9}  {'--------':>8}")
 
+    ckpt_dir = dp_ckpt_dir(target_epsilon, n_members, seed, epochs)
+    epoch_ckpt_dir = ckpt_dir.parent / f"{ckpt_dir.name}_epoch_inprogress"
+
     avg_loss = float("nan")
     try:
         for epoch in range(1, epochs + 1):
@@ -303,7 +308,19 @@ def train_dp(
             elapsed = time.time() - t0
             writer.writerow([epoch, f"{avg_loss:.6f}", f"{elapsed:.1f}"])
             log_fh.flush()
-            print(f"  {epoch:>5}  {avg_loss:>9.4f}  {elapsed:>7.1f}s")
+
+            # Per-epoch checkpoint: overwrite a single in-progress dir each
+            # epoch (using the still-wrapped module's underlying weights, via
+            # the GradSampleModule's _module) so a crash/OOM on a later epoch
+            # or epsilon doesn't lose this epoch's trained weights. Hooks
+            # stay attached -- save_pretrained only touches state_dict, not
+            # the per-parameter grad_sample attributes -- so training
+            # continues normally afterwards.
+            epoch_ckpt_dir.mkdir(parents=True, exist_ok=True)
+            model._module.save_pretrained(epoch_ckpt_dir)
+            tokenizer.save_pretrained(epoch_ckpt_dir)
+
+            print(f"  {epoch:>5}  {avg_loss:>9.4f}  {elapsed:>7.1f}s  [epoch checkpoint saved]")
     finally:
         log_fh.close()
 
@@ -314,10 +331,31 @@ def train_dp(
     model.remove_hooks()
     ft_model = model._module
 
-    ckpt_dir = dp_ckpt_dir(target_epsilon, n_members, seed, epochs)
+    # Opacus attaches per-sample-gradient buffers (grad_sample /
+    # _current_grad_sample) to every parameter; for the embedding and
+    # untied lm_head these are ~500MB+ at the BatchMemoryManager physical
+    # batch size. remove_hooks() doesn't clear them, and the GradSampleModule
+    # / DPOptimizer / PrivacyEngine wrapper objects form reference cycles
+    # that delay GC, so this memory otherwise lingers into the next epsilon
+    # iteration's fresh model and causes a CUDA OOM there. Strip it now.
+    for p in ft_model.parameters():
+        if hasattr(p, "grad_sample"):
+            del p.grad_sample
+        if hasattr(p, "_current_grad_sample"):
+            del p._current_grad_sample
+        p.grad = None
+    del optimizer, privacy_engine, data_loader, loader, dataset, model
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     ft_model.save_pretrained(ckpt_dir)
     tokenizer.save_pretrained(ckpt_dir)
+
+    # Final checkpoint is saved; the per-epoch safety copy is redundant.
+    if epoch_ckpt_dir.exists():
+        shutil.rmtree(epoch_ckpt_dir)
 
     return {
         "model": ft_model,
@@ -392,6 +430,7 @@ def main() -> None:
             }, fh, indent=2)
 
         del base_model
+        gc.collect()
         if device.type == "cuda":
             torch.cuda.empty_cache()
     else:
@@ -491,6 +530,7 @@ def main() -> None:
                 )
 
         del ft_model
+        gc.collect()
         if device.type == "cuda":
             torch.cuda.empty_cache()
 
