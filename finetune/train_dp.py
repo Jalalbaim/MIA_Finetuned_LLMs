@@ -29,21 +29,40 @@ from config import (
     PRETRAINED_CKPT, CKPT_DIR, RESULTS_DIR, LOG_DIR,
 )
 from membership_assignment import load_split
-from train import EnronDataset
+
+from functools import partial
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from torch.optim import AdamW
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
-    DataCollatorForLanguageModeling,
 )
 
 from opacus import PrivacyEngine
 from opacus.validators import ModuleValidator
 from opacus.utils.batch_memory_manager import BatchMemoryManager
+
+# ModuleValidator.fix() clones the model via a torch.save/torch.load round-trip.
+# PyTorch >=2.6 defaults torch.load to weights_only=True, which refuses to
+# unpickle the GPTNeoForCausalLM class. Patch clone_module to pass
+# weights_only=False -- safe here since it round-trips a model we just built.
+import io as _io
+import opacus.validators.module_validator as _module_validator
+
+
+def _clone_module_allow_full_unpickle(module):
+    with _io.BytesIO() as bytesio:
+        torch.save(module, bytesio)
+        bytesio.seek(0)
+        module_copy = torch.load(bytesio, weights_only=False)
+    next_param = next(module.parameters(), None)
+    return module_copy.to(next_param.device) if next_param is not None else module_copy
+
+
+_module_validator.clone_module = _clone_module_allow_full_unpickle
 
 
 # Naming helpers
@@ -88,6 +107,47 @@ def _untie_lm_head(model: nn.Module) -> nn.Module:
         model.config.tie_word_embeddings = False
         print("  Untied lm_head.weight from transformer.wte.weight (Opacus compatibility).")
     return model
+
+
+# DP-compatible dataset
+
+class EnronDPDataset(Dataset):
+    """
+    Fixed-length causal LM dataset for DP-SGD training.
+
+    Opacus's DPDataLoader inspects dataset[0] to build placeholder tensors
+    for empty Poisson-sampled batches, which requires each item to be a
+    sequence of fixed-shape Tensors -- unlike EnronDataset, which returns a
+    variable-length dict for use with DataCollatorForLanguageModeling.
+    Sequences are padded to MAX_SEQ_LEN; __getitem__ returns
+    (input_ids, attention_mask).
+    """
+
+    def __init__(self, records: list[dict], tokenizer) -> None:
+        self._samples: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for rec in records:
+            enc = tokenizer(
+                rec["text"],
+                truncation=True,
+                max_length=MAX_SEQ_LEN,
+                padding="max_length",
+                return_tensors="pt",
+            )
+            self._samples.append((enc["input_ids"].squeeze(0), enc["attention_mask"].squeeze(0)))
+
+    def __len__(self) -> int:
+        return len(self._samples)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        return self._samples[idx]
+
+
+def _collate_dp(batch: list[tuple[torch.Tensor, torch.Tensor]], pad_token_id: int) -> dict:
+    input_ids = torch.stack([ids for ids, _ in batch])
+    attention_mask = torch.stack([mask for _, mask in batch])
+    labels = input_ids.clone()
+    labels[attention_mask == 0] = -100
+    return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
 
 
 # Perplexity
@@ -139,21 +199,32 @@ def train_dp(
     tokenizer = AutoTokenizer.from_pretrained(PRETRAINED_CKPT)
     tokenizer.pad_token = tokenizer.eos_token
 
-    dataset  = EnronDataset(members, tokenizer)
-    collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-    loader   = DataLoader(
+    dataset = EnronDPDataset(members, tokenizer)
+    loader  = DataLoader(
         dataset,
         batch_size=FINETUNE["batch_size"],
         shuffle=True,
-        collate_fn=collator,
+        collate_fn=partial(_collate_dp, pad_token_id=tokenizer.pad_token_id),
         pin_memory=(device.type == "cuda"),
     )
 
     # Fresh pretrained model
+    # from_pretrained() loads the model in eval mode by default; Opacus
+    # requires training mode for its module validation/fixing.
     model = AutoModelForCausalLM.from_pretrained(PRETRAINED_CKPT).to(device)
+    model.train()
 
     # Opacus-compatibility fixes
     model = _untie_lm_head(model)
+
+    # GPT-Neo computes position embeddings from a position_ids tensor of
+    # shape (1, seq_len) that is broadcast over the batch, so wpe's
+    # per-sample grad_sample has batch dim 1 while every other parameter's
+    # grad_sample has batch dim == actual batch size. Opacus's clipping step
+    # stacks per-parameter norms and requires them to match, so freeze the
+    # positional embedding (excluding it from per-sample gradient tracking).
+    model.transformer.wpe.weight.requires_grad_(False)
+    print("  Froze transformer.wpe.weight (Opacus per-sample-grad batch-size compatibility).")
 
     errors = ModuleValidator.validate(model, strict=False)
     if errors:
@@ -216,7 +287,7 @@ def train_dp(
                 optimizer=optimizer,
             ) as memory_safe_loader:
                 for batch in memory_safe_loader:
-                    if batch["input_ids"].shape[0] == 0:
+                    if isinstance(batch, list) or batch["input_ids"].shape[0] == 0:
                         continue  # Poisson sampling can yield empty batches
 
                     batch = {k: v.to(device) for k, v in batch.items()}
