@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import (
     MAX_SEQ_LEN,
     FINETUNE, DP,
-    PRETRAINED_CKPT, CKPT_DIR, RESULTS_DIR, LOG_DIR,
+    PRETRAINED_CKPT, CKPT_DIR, CKPT_OUT_DIR, RESULTS_DIR, LOG_DIR,
 )
 from membership_assignment import load_split
 
@@ -73,7 +73,7 @@ def _fmt_eps(eps: float) -> str:
 
 
 def dp_ckpt_dir(eps: float, n_members: int, seed: int, epochs: int) -> Path:
-    return CKPT_DIR / f"gpt_neo_ft_dp_eps{_fmt_eps(eps)}_N{n_members}_seed{seed}_epoch{epochs}"
+    return CKPT_OUT_DIR / f"gpt_neo_ft_dp_eps{_fmt_eps(eps)}_N{n_members}_seed{seed}_epoch{epochs}"
 
 
 def dp_receipt_path(eps: float, n_members: int, seed: int) -> Path:
@@ -387,7 +387,7 @@ def main() -> None:
                 "n_members": n_members,
                 "seed": seed,
                 "epochs": epochs,
-                "checkpoint": str(baseline_ckpt.relative_to(_ROOT)),
+                "checkpoint": str(baseline_ckpt),
                 "perplexity": baseline_perplexity,
             }, fh, indent=2)
 

@@ -12,6 +12,10 @@ ROOT          = Path(__file__).parent.resolve()
 DATA_DIR      = ROOT / "raw_data" # Raw Enronmail data (if needed)
 CKPT_DIR      = Path("/kaggle/input/datasets/mohamedjalalbaim/gpt-neo-125m-finetuned-enron/checkpoints")
 #CKPT_DIR      = ROOT / "checkpoints"  # Local checkpoint directory for fine-tuning runs
+
+# Writable location for checkpoints produced by the current run (CKPT_DIR
+# above is a read-only Kaggle input dataset mount).
+CKPT_OUT_DIR  = ROOT / "checkpoints"
 RESULTS_DIR   = ROOT / "results"
 FIGURES_DIR   = ROOT / "figures"
 LOG_DIR       = ROOT / "logs"
