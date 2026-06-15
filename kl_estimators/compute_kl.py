@@ -21,6 +21,7 @@ sys.path.insert(0, str(_ROOT / "data"))
 
 from config import (
     CKPT_DIR,
+    CKPT_OUT_DIR,
     CORPUS_SIZES,
     EPOCH_SWEEP,
     KL_EVAL_SIZE,
@@ -162,13 +163,19 @@ def compute_kl_for_checkpoint(
     device: torch.device,
     model_pre: AutoModelForCausalLM | None = None,
     tokenizer: AutoTokenizer | None = None,
+    lora_rank: int | None = None,
 ) -> dict | None:
 
-    ckpt_name = f"gpt_neo_ft_N{n_members}_seed{seed}_epoch{epoch}"
-    ckpt_path = CKPT_DIR / ckpt_name
-
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = RESULTS_DIR / f"kl_N{n_members}_seed{seed}_epoch{epoch}.json"
+
+    if lora_rank is not None:
+        ckpt_name = f"gpt_neo_ft_lora_r{lora_rank}_N{n_members}_seed{seed}_epoch{epoch}"
+        ckpt_path = CKPT_OUT_DIR / ckpt_name
+        out_path = RESULTS_DIR / f"kl_lora_r{lora_rank}_N{n_members}_seed{seed}_epoch{epoch}.json"
+    else:
+        ckpt_name = f"gpt_neo_ft_N{n_members}_seed{seed}_epoch{epoch}"
+        ckpt_path = CKPT_DIR / ckpt_name
+        out_path = RESULTS_DIR / f"kl_N{n_members}_seed{seed}_epoch{epoch}.json"
 
     if out_path.exists():
         print(f"  [skip] {out_path.name} already exists.")
@@ -250,6 +257,7 @@ def compute_kl_for_checkpoint(
         "seed":                  seed,
         "n_members":             n_members,
         "epoch":                 epoch,
+        "lora_rank":             lora_rank,
         "kl_seq":                kl_seq,
         "kl_tok":                kl_tok,
         "pinsker_seq":           pinsker_seq,
@@ -282,17 +290,21 @@ def main() -> None:
                         help="Single N_members to run (default: all CORPUS_SIZES)")
     parser.add_argument("--epoch", type=int, default=None,
                         help="Single epoch to run (default: all EPOCH_SWEEP)")
+    parser.add_argument("--lora_rank", type=int, default=None,
+                        help="LoRA rank of checkpoint to use (default: None = full fine-tuning checkpoints)")
     args = parser.parse_args()
 
     seeds  = [args.seed]  if args.seed  is not None else SEEDS
     ns     = [args.n]     if args.n     is not None else CORPUS_SIZES
     epochs = [args.epoch] if args.epoch is not None else EPOCH_SWEEP
+    lora_rank = args.lora_rank
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device    : {device}")
     print(f"Seeds     : {seeds}")
     print(f"N values  : {ns}")
     print(f"Epochs    : {epochs}")
+    print(f"LoRA rank : {lora_rank}")
 
     t_wall = time.time()
 
@@ -320,6 +332,7 @@ def main() -> None:
                     device=device,
                     model_pre=model_pre,
                     tokenizer=tokenizer,
+                    lora_rank=lora_rank,
                 )
                 if result is not None:
                     epoch_results.append(result)

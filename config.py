@@ -67,6 +67,21 @@ EPOCH_SWEEP = [1, 2, 3, 5, 10, 15, 20]
 # Default N for the epoch sweep and DP experiments
 N_DEFAULT = 2_000
 
+#  LoRA fine-tuning (additive variant, RQ3 secondary axis)
+
+LORA = dict(
+    ranks          = [4, 16, 64],
+    alpha          = 16,    # scaling; kept fixed across ranks for a clean rank sweep
+    dropout        = 0.0,   # no dropout -- deterministic divergence study
+    target_modules = None,  # None -> resolved in finetune/train_lora.py for GPT-Neo attention
+    n              = 6000,
+    seed           = 0,
+)
+
+# LoRA updates only a small adapter, so it tolerates (and typically needs) a
+# higher learning rate than full fine-tuning (FINETUNE["learning_rate"] = 5e-5).
+LORA_LEARNING_RATE = 3e-4
+
 #  Attack signals 
 
 # Fraction of lowest-probability tokens used for Min-K% signal
@@ -130,4 +145,5 @@ RESULTS_COLUMNS = [
     "pinsker_seq", "bh_seq",
     "dp_epsilon",        # None for non-DP runs
     "perplexity",        # None for non-DP runs
+    "lora_rank",         # None for non-LoRA runs
 ]

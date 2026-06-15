@@ -24,6 +24,7 @@ sys.path.insert(0, str(_SIG_DIR))
 from config import (
     CORPUS_SIZES,
     CKPT_DIR,
+    CKPT_OUT_DIR,
     PRETRAINED_CKPT,
     EPOCH_SWEEP,
     MAX_SEQ_LEN,
@@ -78,12 +79,18 @@ def compute_signals_for_checkpoint(
     device: torch.device,
     model_pre: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
+    lora_rank: int | None = None,
 ) -> None:
-    ckpt_name = f"gpt_neo_ft_N{n_members}_seed{seed}_epoch{epoch}"
-    ckpt_path = CKPT_DIR / ckpt_name
-
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = RESULTS_DIR / f"signals_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
+
+    if lora_rank is not None:
+        ckpt_name = f"gpt_neo_ft_lora_r{lora_rank}_N{n_members}_seed{seed}_epoch{epoch}"
+        ckpt_path = CKPT_OUT_DIR / ckpt_name
+        out_path = RESULTS_DIR / f"signals_lora_r{lora_rank}_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
+    else:
+        ckpt_name = f"gpt_neo_ft_N{n_members}_seed{seed}_epoch{epoch}"
+        ckpt_path = CKPT_DIR / ckpt_name
+        out_path = RESULTS_DIR / f"signals_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
 
     if out_path.exists():
         print(f"  [skip] {out_path.name} already exists.")
@@ -166,11 +173,14 @@ def main() -> None:
                         help="Single N_members to run (default: all CORPUS_SIZES)")
     parser.add_argument("--epoch", type=int, default=None,
                         help="Single epoch to run (default: all EPOCH_SWEEP)")
+    parser.add_argument("--lora_rank", type=int, default=None,
+                        help="LoRA rank of checkpoint to use (default: None = full fine-tuning checkpoints)")
     args = parser.parse_args()
 
     seeds  = [args.seed]  if args.seed  is not None else SEEDS
     ns     = [args.n]     if args.n     is not None else CORPUS_SIZES
     epochs = [args.epoch] if args.epoch is not None else EPOCH_SWEEP
+    lora_rank = args.lora_rank
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device    : {device}")
@@ -178,6 +188,7 @@ def main() -> None:
     print(f"N values  : {ns}")
     print(f"Epochs    : {epochs}")
     print(f"Min-K frac: {MIN_K_FRACTION}")
+    print(f"LoRA rank : {lora_rank}")
 
     t_wall = time.time()
 
@@ -199,6 +210,7 @@ def main() -> None:
                     device=device,
                     model_pre=model_pre,
                     tokenizer=tokenizer,
+                    lora_rank=lora_rank,
                 )
 
             del model_pre

@@ -7,6 +7,7 @@ Usage:
     python metrics/compute_metrics.py
 """
 
+import argparse
 import json
 import math
 import sys
@@ -137,9 +138,12 @@ def compute_bounds_from_kl(kl: float) -> tuple[float, float]:
 
 
 def compute_metrics_for_checkpoint(
-    seed: int, n_members: int, epoch: int
+    seed: int, n_members: int, epoch: int, lora_rank: int | None = None
 ) -> list[dict] | None:
-    signals_path = RESULTS_DIR / f"signals_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
+    if lora_rank is not None:
+        signals_path = RESULTS_DIR / f"signals_lora_r{lora_rank}_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
+    else:
+        signals_path = RESULTS_DIR / f"signals_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
 
     if not signals_path.exists():
         print(f"  [skip] Missing signals: {signals_path.name}")
@@ -183,6 +187,7 @@ def compute_metrics_for_checkpoint(
             "bh_seq":           bh_seq,
             "dp_epsilon":       None,
             "perplexity":       None,
+            "lora_rank":        lora_rank,
             "adv_over_bound_seq":  adv_over_bound,
         }
         results.append(row)
@@ -208,6 +213,39 @@ def compute_metrics_for_checkpoint(
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Compute MIA metrics and append/write to results/metrics_all.csv."
+    )
+    parser.add_argument("--lora_rank", type=int, default=None,
+                        help="LoRA rank of checkpoint to use (default: None = full sweep over non-LoRA checkpoints)")
+    parser.add_argument("--n",     type=int, default=None,
+                        help="N_members (required with --lora_rank)")
+    parser.add_argument("--seed",  type=int, default=None,
+                        help="Seed (required with --lora_rank)")
+    parser.add_argument("--epoch", type=int, default=None,
+                        help="Epoch (required with --lora_rank)")
+    args = parser.parse_args()
+
+    out_cols = RESULTS_COLUMNS + ["adv_over_bound_seq"]
+    out_path = RESULTS_DIR / "metrics_all.csv"
+
+    if args.lora_rank is not None:
+        rows = compute_metrics_for_checkpoint(args.seed, args.n, args.epoch, lora_rank=args.lora_rank)
+        if not rows:
+            print("No results found — nothing to write.")
+            return
+
+        df_new = pd.DataFrame(rows, columns=out_cols)
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        if out_path.exists():
+            df_existing = pd.read_csv(out_path)
+            df = pd.concat([df_existing, df_new], ignore_index=True)
+        else:
+            df = df_new
+        df.to_csv(out_path, index=False)
+        print(f"\nAppended {len(df_new):,} LoRA row(s) → {out_path}")
+        return
+
     all_rows: list[dict] = []
 
     for seed in SEEDS:
@@ -221,11 +259,9 @@ def main() -> None:
         print("No results found — nothing to write.")
         return
 
-    out_cols = RESULTS_COLUMNS + ["adv_over_bound_seq"]
     df = pd.DataFrame(all_rows, columns=out_cols)
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = RESULTS_DIR / "metrics_all.csv"
     df.to_csv(out_path, index=False)
     print(f"\nWrote {len(df):,} rows → {out_path}")
 
