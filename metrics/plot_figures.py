@@ -82,6 +82,12 @@ def _cat_line(ax, x_labels, y_mean, y_std, color,
     ax.set_xticklabels([str(x) for x in x_labels])
 
 
+def _intersect_epochs(sub: pd.DataFrame, group_cols) -> list:
+    """Epochs present in every group — skips epochs missing from any config."""
+    sets = [set(grp["epochs"]) for _, grp in sub.groupby(group_cols)]
+    return sorted(set.intersection(*sets)) if sets else []
+
+
 
 # Figure functions
 
@@ -164,40 +170,34 @@ def fig2_pinsker_vs_bh(df: pd.DataFrame):
 
 
 def fig4_dp_efficacy(df: pd.DataFrame):
-    """RQ4 – DP epsilon vs KL divergence and empirical advantage."""
+    """RQ4 – Empirical advantage vs DP epsilon, one line per corpus size at epoch 5."""
+    DP_EPOCH = 5
+
     sub = df[
         (df["signal"] == PRIMARY_SIGNAL) &
-        (df["n_members"] == 2000) &
-        (df["epochs"] == 3)
+        (df["epochs"] == DP_EPOCH) &
+        (df["dp_epsilon"].notna())
     ].copy()
 
-    if not sub["dp_epsilon"].notna().any():
+    if sub.empty:
         print("[Fig 4] No DP rows found – skipping.")
         return None
 
-    baseline = sub[sub["dp_epsilon"].isna()].copy()
-    baseline["dp_epsilon"] = 16.0          # treat non-DP as ε=∞ sentinel
-    dp_rows = sub[sub["dp_epsilon"].notna()]
-    plot_df = pd.concat([dp_rows, baseline]).sort_values("dp_epsilon")
+    ns_available = sorted(sub["n_members"].unique())
 
     with plt.style.context(STYLE):
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+        fig, ax = plt.subplots(figsize=(7, 5))
 
-        ax1.plot(plot_df["dp_epsilon"], plot_df["kl_seq"],
-                 "o-", color="steelblue", lw=2)
-        ax1.set_xscale("log")
-        ax1.set_xlabel("DP ε (log scale)")
-        ax1.set_ylabel("KL divergence (seq)")
-        ax1.set_title("KL vs DP ε")
+        for nm in ns_available:
+            color = PALETTE_MEMBERS.get(nm, "gray")
+            grp = sub[sub["n_members"] == nm].sort_values("dp_epsilon")
+            ax.plot(grp["dp_epsilon"], grp["adv"],
+                    "o-", color=color, lw=2, label=f"N={nm:,}")
 
-        ax2.plot(plot_df["dp_epsilon"], plot_df["adv"],
-                 "o-", color="crimson", lw=2)
-        ax2.set_xscale("log")
-        ax2.set_xlabel("DP ε (log scale)")
-        ax2.set_ylabel("Empirical Adv̂")
-        ax2.set_title("Advantage vs DP ε")
-
-        fig.suptitle("Differential Privacy Efficacy")
+        ax.set_xlabel("DP ε")
+        ax.set_ylabel("Empirical Adv̂")
+        ax.set_title(f"DP Efficacy: Advantage vs ε  (epoch {DP_EPOCH})")
+        ax.legend(title="N members")
         fig.tight_layout()
         out = fig_path(4)
         fig.savefig(out, dpi=FIG_DPI)
@@ -212,7 +212,11 @@ def fig5_corpus_size_sweep(df: pd.DataFrame):
         print("[Fig 5] No matching data – skipping.")
         return None
 
-    all_epochs = sorted(sub["epochs"].unique())
+    all_epochs = _intersect_epochs(sub, "n_members")
+    if not all_epochs:
+        print("[Fig 5] No epochs common to all corpus sizes – skipping.")
+        return None
+    sub = sub[sub["epochs"].isin(all_epochs)]
 
     with plt.style.context(STYLE):
         fig, ax = plt.subplots(figsize=(8, 5))
@@ -244,7 +248,11 @@ def fig6_signal_comparison(df: pd.DataFrame):
         print("[Fig 6] No matching data – skipping.")
         return None
 
-    all_epochs = sorted(sub["epochs"].unique())
+    all_epochs = _intersect_epochs(sub, "signal")
+    if not all_epochs:
+        print("[Fig 6] No epochs common to all signals – skipping.")
+        return None
+    sub = sub[sub["epochs"].isin(all_epochs)]
 
     with plt.style.context(STYLE):
         fig, ax = plt.subplots(figsize=(8, 5))
@@ -280,7 +288,11 @@ def fig7_tpr_at_fpr(df: pd.DataFrame):
         print("[Fig 7] No matching data – skipping.")
         return None
 
-    all_epochs = sorted(sub["epochs"].unique())
+    all_epochs = _intersect_epochs(sub, "n_members")
+    if not all_epochs:
+        print("[Fig 7] No epochs common to all corpus sizes – skipping.")
+        return None
+    sub = sub[sub["epochs"].isin(all_epochs)]
 
     with plt.style.context(STYLE):
         fig, ax = plt.subplots(figsize=(8, 5))
@@ -350,8 +362,12 @@ def fig9_adv_vs_bounds_per_epoch(df: pd.DataFrame):
         print("[Fig 9] No matching data – skipping.")
         return None
 
+    all_epochs = _intersect_epochs(sub, "n_members")
+    if not all_epochs:
+        print("[Fig 9] No epochs common to all corpus sizes – skipping.")
+        return None
+    sub = sub[sub["epochs"].isin(all_epochs)]
     ns = sorted(sub["n_members"].unique())
-    all_epochs = sorted(sub["epochs"].unique())
     ncols = len(ns)
 
     with plt.style.context(STYLE):
@@ -404,6 +420,12 @@ def fig10_adv_ratio_per_epoch(df: pd.DataFrame):
     if sub.empty:
         print("[Fig 10] No matching data – skipping.")
         return None
+
+    all_epochs = _intersect_epochs(sub, "n_members")
+    if not all_epochs:
+        print("[Fig 10] No epochs common to all corpus sizes – skipping.")
+        return None
+    sub = sub[sub["epochs"].isin(all_epochs)]
 
     sub["ratio_bh"]      = sub["adv"] / sub["bh_seq"].replace(0, np.nan)
     sub["ratio_pinsker"] = sub["adv"] / sub["pinsker_seq"].replace(0, np.nan)
@@ -463,8 +485,12 @@ def fig11_seed_comparison(df: pd.DataFrame):
         print("[Fig 11] No matching data – skipping.")
         return None
 
+    all_epochs = _intersect_epochs(sub, ["n_members", "seed"])
+    if not all_epochs:
+        print("[Fig 11] No epochs common to all (n_members, seed) combinations – skipping.")
+        return None
+    sub = sub[sub["epochs"].isin(all_epochs)]
     ns = sorted(sub["n_members"].unique())
-    all_epochs = sorted(sub["epochs"].unique())
     ncols = len(ns)
 
     with plt.style.context(STYLE):
