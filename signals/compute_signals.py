@@ -72,6 +72,10 @@ def _load_model(ckpt_path: Path, device: torch.device) -> AutoModelForCausalLM:
     return model
 
 
+def _fmt_eps(eps: float) -> str:
+    return f"{eps:g}"
+
+
 def compute_signals_for_checkpoint(
     seed: int,
     n_members: int,
@@ -80,10 +84,15 @@ def compute_signals_for_checkpoint(
     model_pre: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
     lora_rank: int | None = None,
+    dp_eps: float | None = None,
 ) -> None:
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    if lora_rank is not None:
+    if dp_eps is not None:
+        ckpt_name = f"gpt_neo_ft_dp_eps{_fmt_eps(dp_eps)}_N{n_members}_seed{seed}_epoch{epoch}"
+        ckpt_path = CKPT_OUT_DIR / ckpt_name
+        out_path = RESULTS_DIR / f"signals_dp_eps{_fmt_eps(dp_eps)}_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
+    elif lora_rank is not None:
         ckpt_name = f"gpt_neo_ft_lora_r{lora_rank}_N{n_members}_seed{seed}_epoch{epoch}"
         ckpt_path = CKPT_OUT_DIR / ckpt_name
         out_path = RESULTS_DIR / f"signals_lora_r{lora_rank}_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
@@ -175,12 +184,15 @@ def main() -> None:
                         help="Single epoch to run (default: all EPOCH_SWEEP)")
     parser.add_argument("--lora_rank", type=int, default=None,
                         help="LoRA rank of checkpoint to use (default: None = full fine-tuning checkpoints)")
+    parser.add_argument("--dp_eps", type=float, default=None,
+                        help="DP epsilon of checkpoint to use (default: None = non-DP checkpoints)")
     args = parser.parse_args()
 
     seeds  = [args.seed]  if args.seed  is not None else SEEDS
     ns     = [args.n]     if args.n     is not None else CORPUS_SIZES
     epochs = [args.epoch] if args.epoch is not None else EPOCH_SWEEP
     lora_rank = args.lora_rank
+    dp_eps    = args.dp_eps
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device    : {device}")
@@ -189,6 +201,7 @@ def main() -> None:
     print(f"Epochs    : {epochs}")
     print(f"Min-K frac: {MIN_K_FRACTION}")
     print(f"LoRA rank : {lora_rank}")
+    print(f"DP epsilon: {dp_eps}")
 
     t_wall = time.time()
 
@@ -211,6 +224,7 @@ def main() -> None:
                     model_pre=model_pre,
                     tokenizer=tokenizer,
                     lora_rank=lora_rank,
+                    dp_eps=dp_eps,
                 )
 
             del model_pre
