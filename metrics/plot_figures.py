@@ -47,7 +47,11 @@ _FIG_STEMS = {
     9: "fig9_adv_vs_bounds_per_epoch",
     10: "fig10_adv_ratio_per_epoch",
     11: "fig11_seed_comparison",
+    12: "fig12_dp_vs_nondp_n6000",
+    13: "fig13_auroc_dp_vs_nondp_n6000",
 }
+
+PALETTE_DP_EPS = {1: "#e7298a", 4: "#7570b3", 8: "#1b9e77"}
 
 
 def fig_path(n: int) -> Path:
@@ -530,6 +534,152 @@ def fig11_seed_comparison(df: pd.DataFrame):
     return out
 
 
+def fig12_dp_vs_nondp_n6000(df: pd.DataFrame):
+    """N=6000, epochs 1–5: non-DP adv + BH + Pinsker vs DP adv per epsilon."""
+    MAX_EPOCH = 5
+    sub = df[(df["signal"] == PRIMARY_SIGNAL) & (df["n_members"] == 6000)].copy()
+    if sub.empty:
+        print("[Fig 12] No data for N=6000 – skipping.")
+        return None
+
+    # Non-DP: average across seeds, restrict to epochs 1–5
+    nondp = (
+        sub[(sub["dp_epsilon"].isna()) & (sub["epochs"] <= MAX_EPOCH)]
+        .groupby("epochs")[["adv", "bh_seq", "pinsker_seq"]]
+        .agg(["mean", "std"])
+        .reset_index()
+    )
+    nondp.columns = ["epochs"] + _agg_cols(nondp.columns[1:])
+    nondp = nondp.sort_values("epochs")
+
+    if nondp.empty:
+        print("[Fig 12] No non-DP data for N=6000 epochs 1–5 – skipping.")
+        return None
+
+    ep_labels = nondp["epochs"].tolist()
+
+    # DP: one line per epsilon, restrict to epochs 1–5
+    dp = sub[(sub["dp_epsilon"].notna()) & (sub["epochs"] <= MAX_EPOCH)]
+
+    with plt.style.context(STYLE):
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        # Non-DP curves
+        _cat_line(ax, ep_labels, nondp["adv_mean"], nondp["adv_std"],
+                  "black", ls="-", marker="o", label="Non-DP Adv̂")
+        _cat_line(ax, ep_labels, nondp["bh_seq_mean"], nondp["bh_seq_std"],
+                  "red", ls="--", marker="", label="BH bound")
+        _cat_line(ax, ep_labels, nondp["pinsker_seq_mean"], nondp["pinsker_seq_std"],
+                  "blue", ls=":", marker="", label="Pinsker bound")
+
+        # DP curves — one per epsilon (plotted only where data exists)
+        for eps, grp in dp.groupby("dp_epsilon"):
+            color = PALETTE_DP_EPS.get(int(eps), "gray")
+            grp_agg = (
+                grp.groupby("epochs")["adv"]
+                .agg(["mean", "std"])
+                .reset_index()
+                .sort_values("epochs")
+            )
+            dp_ep = grp_agg["epochs"].tolist()
+            # Map dp epochs to the same x-positions as nondp if they overlap,
+            # otherwise plot at their own positions
+            common = [e for e in dp_ep if e in ep_labels]
+            if not common:
+                continue
+            grp_agg = grp_agg[grp_agg["epochs"].isin(common)]
+            xs = [ep_labels.index(e) for e in grp_agg["epochs"].tolist()]
+            ax.plot(xs, grp_agg["mean"].values, "s--",
+                    color=color, lw=2, label=f"DP ε={eps:g} Adv̂")
+            std = grp_agg["std"].fillna(0).values
+            if np.any(std > 0):
+                ax.fill_between(xs,
+                                grp_agg["mean"].values - std,
+                                grp_agg["mean"].values + std,
+                                color=color, alpha=0.2)
+
+        ax.set_xticks(range(len(ep_labels)))
+        ax.set_xticklabels([str(e) for e in ep_labels])
+        ax.set_xlabel("Epochs")
+        ax.set_ylabel("Advantage / Bound")
+        ax.set_title("N=6,000 — Non-DP vs DP Fine-tuning (epochs 1–5)")
+        ax.legend(fontsize=9)
+        fig.tight_layout()
+        out = fig_path(12)
+        fig.savefig(out, dpi=FIG_DPI)
+        plt.close(fig)
+    return out
+
+
+def fig13_auroc_dp_vs_nondp_n6000(df: pd.DataFrame):
+    """N=6000: AUROC vs epochs for non-DP (all signals) and DP (primary signal per ε)."""
+    sub = df[df["n_members"] == 6000].copy()
+    if sub.empty:
+        print("[Fig 13] No data for N=6000 – skipping.")
+        return None
+
+    nondp = sub[sub["dp_epsilon"].isna()]
+    dp    = sub[sub["dp_epsilon"].notna()]
+
+    # All epochs present in non-DP data (across any signal)
+    all_epochs = sorted(nondp["epochs"].unique())
+    if not all_epochs:
+        print("[Fig 13] No non-DP data for N=6000 – skipping.")
+        return None
+
+    with plt.style.context(STYLE):
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        # Non-DP: one curve per signal, averaged across seeds
+        for sig, grp in nondp.groupby("signal"):
+            color = PALETTE_SIGNALS.get(sig, "gray")
+            agg = (
+                grp.groupby("epochs")["auroc"]
+                .agg(["mean", "std"])
+                .reindex(all_epochs)
+                .reset_index()
+            )
+            _cat_line(ax, all_epochs, agg["mean"], agg["std"],
+                      color, ls="-", marker="o", label=f"Non-DP {sig}")
+
+        # DP: one curve per epsilon (primary signal only), plotted where data exists
+        if not dp.empty:
+            dp_prim = dp[dp["signal"] == PRIMARY_SIGNAL]
+            for eps, grp in dp_prim.groupby("dp_epsilon"):
+                color = PALETTE_DP_EPS.get(int(eps), "gray")
+                grp_agg = (
+                    grp.groupby("epochs")["auroc"]
+                    .agg(["mean", "std"])
+                    .reset_index()
+                    .sort_values("epochs")
+                )
+                common = [e for e in grp_agg["epochs"].tolist() if e in all_epochs]
+                if not common:
+                    continue
+                grp_agg = grp_agg[grp_agg["epochs"].isin(common)]
+                xs = [all_epochs.index(e) for e in grp_agg["epochs"].tolist()]
+                ax.plot(xs, grp_agg["mean"].values, "s--",
+                        color=color, lw=2, label=f"DP ε={eps:g} ({PRIMARY_SIGNAL})")
+                std = grp_agg["std"].fillna(0).values
+                if np.any(std > 0):
+                    ax.fill_between(xs,
+                                    grp_agg["mean"].values - std,
+                                    grp_agg["mean"].values + std,
+                                    color=color, alpha=0.2)
+
+        ax.axhline(0.5, color="gray", ls="--", lw=1, label="Random (0.5)")
+        ax.set_xticks(range(len(all_epochs)))
+        ax.set_xticklabels([str(e) for e in all_epochs])
+        ax.set_xlabel("Epochs")
+        ax.set_ylabel("AUROC")
+        ax.set_title("N=6,000 — AUROC: Non-DP (all signals) vs DP fine-tuning")
+        ax.legend(fontsize=8, ncol=2)
+        fig.tight_layout()
+        out = fig_path(13)
+        fig.savefig(out, dpi=FIG_DPI)
+        plt.close(fig)
+    return out
+
 
 # Main
 
@@ -553,6 +703,8 @@ def main():
         (9, fig9_adv_vs_bounds_per_epoch),
         (10, fig10_adv_ratio_per_epoch),
         (11, fig11_seed_comparison),
+        (12, fig12_dp_vs_nondp_n6000),
+        (13, fig13_auroc_dp_vs_nondp_n6000),
     ]
 
     saved, skipped, failed = [], [], []
