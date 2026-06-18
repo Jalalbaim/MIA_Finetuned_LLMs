@@ -16,3 +16,5 @@ results/
 figures/
 
 checkpoints.zip
+
+__pycache__/
