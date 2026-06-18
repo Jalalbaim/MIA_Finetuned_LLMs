@@ -18,3 +18,5 @@ figures/
 checkpoints.zip
 
 __pycache__/
+
+dp_6000/
