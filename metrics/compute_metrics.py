@@ -137,10 +137,18 @@ def compute_bounds_from_kl(kl: float) -> tuple[float, float]:
     return pinsker, bh
 
 
+def _fmt_eps(eps: float) -> str:
+    return f"{eps:g}"
+
+
 def compute_metrics_for_checkpoint(
-    seed: int, n_members: int, epoch: int, lora_rank: int | None = None
+    seed: int, n_members: int, epoch: int,
+    lora_rank: int | None = None,
+    dp_eps: float | None = None,
 ) -> list[dict] | None:
-    if lora_rank is not None:
+    if dp_eps is not None:
+        signals_path = RESULTS_DIR / f"signals_dp_eps{_fmt_eps(dp_eps)}_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
+    elif lora_rank is not None:
         signals_path = RESULTS_DIR / f"signals_lora_r{lora_rank}_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
     else:
         signals_path = RESULTS_DIR / f"signals_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
@@ -185,7 +193,7 @@ def compute_metrics_for_checkpoint(
             "kl_seq":           kl_seq,
             "pinsker_seq":      pinsker_seq,
             "bh_seq":           bh_seq,
-            "dp_epsilon":       None,
+            "dp_epsilon":       dp_eps,
             "perplexity":       None,
             "lora_rank":        lora_rank,
             "adv_over_bound_seq":  adv_over_bound,
@@ -218,16 +226,35 @@ def main() -> None:
     )
     parser.add_argument("--lora_rank", type=int, default=None,
                         help="LoRA rank of checkpoint to use (default: None = full sweep over non-LoRA checkpoints)")
+    parser.add_argument("--dp_eps", type=float, default=None,
+                        help="DP epsilon of checkpoint to use (default: None = non-DP checkpoints)")
     parser.add_argument("--n",     type=int, default=None,
-                        help="N_members (required with --lora_rank)")
+                        help="N_members (required with --lora_rank or --dp_eps)")
     parser.add_argument("--seed",  type=int, default=None,
-                        help="Seed (required with --lora_rank)")
+                        help="Seed (required with --lora_rank or --dp_eps)")
     parser.add_argument("--epoch", type=int, default=None,
-                        help="Epoch (required with --lora_rank)")
+                        help="Epoch (required with --lora_rank or --dp_eps)")
     args = parser.parse_args()
 
     out_cols = RESULTS_COLUMNS + ["adv_over_bound_seq"]
     out_path = RESULTS_DIR / "metrics_all.csv"
+
+    if args.dp_eps is not None:
+        rows = compute_metrics_for_checkpoint(args.seed, args.n, args.epoch, dp_eps=args.dp_eps)
+        if not rows:
+            print("No results found — nothing to write.")
+            return
+
+        df_new = pd.DataFrame(rows, columns=out_cols)
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        if out_path.exists():
+            df_existing = pd.read_csv(out_path)
+            df = pd.concat([df_existing, df_new], ignore_index=True)
+        else:
+            df = df_new
+        df.to_csv(out_path, index=False)
+        print(f"\nAppended {len(df_new):,} DP (eps={args.dp_eps}) row(s) → {out_path}")
+        return
 
     if args.lora_rank is not None:
         rows = compute_metrics_for_checkpoint(args.seed, args.n, args.epoch, lora_rank=args.lora_rank)
