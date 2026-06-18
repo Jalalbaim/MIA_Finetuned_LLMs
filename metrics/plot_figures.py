@@ -98,7 +98,7 @@ def _intersect_epochs(sub: pd.DataFrame, group_cols) -> list:
 
 def fig1_bound_validity(df: pd.DataFrame):
     """RQ1/RQ2 – Empirical advantage vs BH and Pinsker bounds over KL."""
-    sub = df[(df["signal"] == PRIMARY_SIGNAL) & (df["n_members"] == 2000)].copy()
+    sub = df[(df["signal"] == PRIMARY_SIGNAL) & (df["n_members"] == 2000) & df["dp_epsilon"].isna()].copy()
     if sub.empty:
         print("[Fig 1] No data for signal=ref, n_members=2000 – skipping.")
         return None
@@ -142,7 +142,7 @@ def fig1_bound_validity(df: pd.DataFrame):
 
 def fig2_pinsker_vs_bh(df: pd.DataFrame):
     """RQ3 – Pinsker vs BH bound regime transition over epochs."""
-    sub = df[(df["signal"] == PRIMARY_SIGNAL) & (df["n_members"] == 2000)].copy()
+    sub = df[(df["signal"] == PRIMARY_SIGNAL) & (df["n_members"] == 2000) & df["dp_epsilon"].isna()].copy()
     if sub.empty:
         print("[Fig 2] No matching data – skipping.")
         return None
@@ -211,7 +211,7 @@ def fig4_dp_efficacy(df: pd.DataFrame):
 
 def fig5_corpus_size_sweep(df: pd.DataFrame):
     """Corpus size sweep – Empirical advantage vs epochs per n_members."""
-    sub = df[df["signal"] == PRIMARY_SIGNAL].copy()
+    sub = df[(df["signal"] == PRIMARY_SIGNAL) & df["dp_epsilon"].isna()].copy()
     if sub.empty:
         print("[Fig 5] No matching data – skipping.")
         return None
@@ -247,7 +247,7 @@ def fig5_corpus_size_sweep(df: pd.DataFrame):
 
 def fig6_signal_comparison(df: pd.DataFrame):
     """Attack signal comparison – AUROC vs epochs, one curve per signal."""
-    sub = df[(df["n_members"] == 2000) & (df["seed"] == 0)].copy()
+    sub = df[(df["n_members"] == 2000) & (df["seed"] == 0) & df["dp_epsilon"].isna()].copy()
     if sub.empty:
         print("[Fig 6] No matching data – skipping.")
         return None
@@ -287,7 +287,7 @@ def fig6_signal_comparison(df: pd.DataFrame):
 
 def fig7_tpr_at_fpr(df: pd.DataFrame):
     """TPR at 1% FPR vs epochs, one curve per n_members."""
-    sub = df[df["signal"] == PRIMARY_SIGNAL].copy()
+    sub = df[(df["signal"] == PRIMARY_SIGNAL) & df["dp_epsilon"].isna()].copy()
     if sub.empty:
         print("[Fig 7] No matching data – skipping.")
         return None
@@ -323,7 +323,7 @@ def fig7_tpr_at_fpr(df: pd.DataFrame):
 
 def fig8_tightness_heatmap(df: pd.DataFrame):
     """Tightness ratio heatmap: adv/bh_seq for n_members × epochs."""
-    sub = df[(df["signal"] == PRIMARY_SIGNAL) & (df["seed"] == 0)].copy()
+    sub = df[(df["signal"] == PRIMARY_SIGNAL) & (df["seed"] == 0) & df["dp_epsilon"].isna()].copy()
     if sub.empty:
         print("[Fig 8] No matching data – skipping.")
         return None
@@ -361,7 +361,7 @@ def fig8_tightness_heatmap(df: pd.DataFrame):
 
 def fig9_adv_vs_bounds_per_epoch(df: pd.DataFrame):
     """Empirical advantage vs BH and Pinsker bounds per epoch, one panel per corpus size."""
-    sub = df[df["signal"] == PRIMARY_SIGNAL].copy()
+    sub = df[(df["signal"] == PRIMARY_SIGNAL) & df["dp_epsilon"].isna()].copy()
     if sub.empty:
         print("[Fig 9] No matching data – skipping.")
         return None
@@ -420,7 +420,7 @@ def fig9_adv_vs_bounds_per_epoch(df: pd.DataFrame):
 
 def fig10_adv_ratio_per_epoch(df: pd.DataFrame):
     """Tightness ratios Adv/BH and Adv/Pinsker per epoch, one panel per corpus size."""
-    sub = df[df["signal"] == PRIMARY_SIGNAL].copy()
+    sub = df[(df["signal"] == PRIMARY_SIGNAL) & df["dp_epsilon"].isna()].copy()
     if sub.empty:
         print("[Fig 10] No matching data – skipping.")
         return None
@@ -484,7 +484,7 @@ def fig10_adv_ratio_per_epoch(df: pd.DataFrame):
 def fig11_seed_comparison(df: pd.DataFrame):
     """Cross-seed comparison – Empirical advantage vs epochs, one panel per
     corpus size, one curve per seed (run-to-run variance check)."""
-    sub = df[df["signal"] == PRIMARY_SIGNAL].copy()
+    sub = df[(df["signal"] == PRIMARY_SIGNAL) & df["dp_epsilon"].isna()].copy()
     if sub.empty:
         print("[Fig 11] No matching data – skipping.")
         return None
