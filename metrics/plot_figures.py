@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from sklearn.metrics import roc_curve, auc as sklearn_auc
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
@@ -20,6 +21,7 @@ from config import (
     SEEDS, CORPUS_SIZES, EPOCH_SWEEP, PRIMARY_SIGNAL,
     RESULTS_DIR, FIGURES_DIR,
 )
+from metrics.compute_metrics import load_scores, _fmt_eps
 
 
 # Constants
@@ -49,6 +51,7 @@ _FIG_STEMS = {
     11: "fig11_seed_comparison",
     12: "fig12_dp_vs_nondp_n6000",
     13: "fig13_auroc_dp_vs_nondp_n6000",
+    14: "fig14_roc_curves_full_vs_dp",
 }
 
 PALETTE_DP_EPS = {1: "#e7298a", 4: "#7570b3", 8: "#1b9e77"}
@@ -92,13 +95,25 @@ def _intersect_epochs(sub: pd.DataFrame, group_cols) -> list:
     return sorted(set.intersection(*sets)) if sets else []
 
 
+def plot_roc_curve(ax, scores_members, scores_nonmembers, color,
+                    ls="-", lw=2, label=""):
+    """Draw one ROC curve (member vs non-member attack scores) on ax, with
+    its AUC appended to the legend label. Returns the AUC."""
+    labels = [1] * len(scores_members) + [0] * len(scores_nonmembers)
+    scores = list(scores_members) + list(scores_nonmembers)
+    fpr, tpr, _ = roc_curve(labels, scores)
+    roc_auc = float(sklearn_auc(fpr, tpr))
+    ax.plot(fpr, tpr, color=color, ls=ls, lw=lw, label=f"{label} (AUC={roc_auc:.3f})")
+    return roc_auc
+
+
 
 # Figure functions
 
 
 def fig1_bound_validity(df: pd.DataFrame):
     """RQ1/RQ2 – Empirical advantage vs BH and Pinsker bounds over KL."""
-    sub = df[(df["signal"] == PRIMARY_SIGNAL) & (df["n_members"] == 2000) & df["dp_epsilon"].isna()].copy()
+    sub = df[(df["signal"] == PRIMARY_SIGNAL) & (df["n_members"] == 2000) & df["dp_epsilon"].isna() & df["lora_rank"].isna()].copy()
     if sub.empty:
         print("[Fig 1] No data for signal=ref, n_members=2000 – skipping.")
         return None
@@ -142,7 +157,7 @@ def fig1_bound_validity(df: pd.DataFrame):
 
 def fig2_pinsker_vs_bh(df: pd.DataFrame):
     """RQ3 – Pinsker vs BH bound regime transition over epochs."""
-    sub = df[(df["signal"] == PRIMARY_SIGNAL) & (df["n_members"] == 2000) & df["dp_epsilon"].isna()].copy()
+    sub = df[(df["signal"] == PRIMARY_SIGNAL) & (df["n_members"] == 2000) & df["dp_epsilon"].isna() & df["lora_rank"].isna()].copy()
     if sub.empty:
         print("[Fig 2] No matching data – skipping.")
         return None
@@ -211,7 +226,7 @@ def fig4_dp_efficacy(df: pd.DataFrame):
 
 def fig5_corpus_size_sweep(df: pd.DataFrame):
     """Corpus size sweep – Empirical advantage vs epochs per n_members."""
-    sub = df[(df["signal"] == PRIMARY_SIGNAL) & df["dp_epsilon"].isna()].copy()
+    sub = df[(df["signal"] == PRIMARY_SIGNAL) & df["dp_epsilon"].isna() & df["lora_rank"].isna()].copy()
     if sub.empty:
         print("[Fig 5] No matching data – skipping.")
         return None
@@ -247,7 +262,7 @@ def fig5_corpus_size_sweep(df: pd.DataFrame):
 
 def fig6_signal_comparison(df: pd.DataFrame):
     """Attack signal comparison – AUROC vs epochs, one curve per signal."""
-    sub = df[(df["n_members"] == 2000) & (df["seed"] == 0) & df["dp_epsilon"].isna()].copy()
+    sub = df[(df["n_members"] == 2000) & (df["seed"] == 0) & df["dp_epsilon"].isna() & df["lora_rank"].isna()].copy()
     if sub.empty:
         print("[Fig 6] No matching data – skipping.")
         return None
@@ -287,7 +302,7 @@ def fig6_signal_comparison(df: pd.DataFrame):
 
 def fig7_tpr_at_fpr(df: pd.DataFrame):
     """TPR at 1% FPR vs epochs, one curve per n_members."""
-    sub = df[(df["signal"] == PRIMARY_SIGNAL) & df["dp_epsilon"].isna()].copy()
+    sub = df[(df["signal"] == PRIMARY_SIGNAL) & df["dp_epsilon"].isna() & df["lora_rank"].isna()].copy()
     if sub.empty:
         print("[Fig 7] No matching data – skipping.")
         return None
@@ -323,7 +338,7 @@ def fig7_tpr_at_fpr(df: pd.DataFrame):
 
 def fig8_tightness_heatmap(df: pd.DataFrame):
     """Tightness ratio heatmap: adv/bh_seq for n_members × epochs."""
-    sub = df[(df["signal"] == PRIMARY_SIGNAL) & (df["seed"] == 0) & df["dp_epsilon"].isna()].copy()
+    sub = df[(df["signal"] == PRIMARY_SIGNAL) & (df["seed"] == 0) & df["dp_epsilon"].isna() & df["lora_rank"].isna()].copy()
     if sub.empty:
         print("[Fig 8] No matching data – skipping.")
         return None
@@ -361,7 +376,7 @@ def fig8_tightness_heatmap(df: pd.DataFrame):
 
 def fig9_adv_vs_bounds_per_epoch(df: pd.DataFrame):
     """Empirical advantage vs BH and Pinsker bounds per epoch, one panel per corpus size."""
-    sub = df[(df["signal"] == PRIMARY_SIGNAL) & df["dp_epsilon"].isna()].copy()
+    sub = df[(df["signal"] == PRIMARY_SIGNAL) & df["dp_epsilon"].isna() & df["lora_rank"].isna()].copy()
     if sub.empty:
         print("[Fig 9] No matching data – skipping.")
         return None
@@ -420,7 +435,7 @@ def fig9_adv_vs_bounds_per_epoch(df: pd.DataFrame):
 
 def fig10_adv_ratio_per_epoch(df: pd.DataFrame):
     """Tightness ratios Adv/BH and Adv/Pinsker per epoch, one panel per corpus size."""
-    sub = df[(df["signal"] == PRIMARY_SIGNAL) & df["dp_epsilon"].isna()].copy()
+    sub = df[(df["signal"] == PRIMARY_SIGNAL) & df["dp_epsilon"].isna() & df["lora_rank"].isna()].copy()
     if sub.empty:
         print("[Fig 10] No matching data – skipping.")
         return None
@@ -484,7 +499,7 @@ def fig10_adv_ratio_per_epoch(df: pd.DataFrame):
 def fig11_seed_comparison(df: pd.DataFrame):
     """Cross-seed comparison – Empirical advantage vs epochs, one panel per
     corpus size, one curve per seed (run-to-run variance check)."""
-    sub = df[(df["signal"] == PRIMARY_SIGNAL) & df["dp_epsilon"].isna()].copy()
+    sub = df[(df["signal"] == PRIMARY_SIGNAL) & df["dp_epsilon"].isna() & df["lora_rank"].isna()].copy()
     if sub.empty:
         print("[Fig 11] No matching data – skipping.")
         return None
@@ -681,6 +696,68 @@ def fig13_auroc_dp_vs_nondp_n6000(df: pd.DataFrame):
     return out
 
 
+def fig14_roc_curves_full_vs_dp(df: pd.DataFrame):
+    """ROC curves (with AUC in the legend) for full fine-tuning vs DP
+    fine-tuning, one panel per epoch — N=6,000, seed=0, signal=ref."""
+    N, SEED, SIG = 6000, 0, PRIMARY_SIGNAL
+
+    dp_epsilons = sorted(df.loc[df["n_members"] == N, "dp_epsilon"].dropna().unique())
+    if not dp_epsilons:
+        print("[Fig 14] No DP epsilon values found for N=6,000 – skipping.")
+        return None
+
+    candidate_epochs = sorted(
+        df.loc[(df["n_members"] == N) & df["dp_epsilon"].isna(), "epochs"].unique()
+    )
+
+    def nondp_path(epoch):
+        return RESULTS_DIR / f"signals_N{N}_seed{SEED}_epoch{epoch}.jsonl"
+
+    def dp_path(eps, epoch):
+        return RESULTS_DIR / f"signals_dp_eps{_fmt_eps(eps)}_N{N}_seed{SEED}_epoch{epoch}.jsonl"
+
+    epochs = [
+        int(ep) for ep in candidate_epochs
+        if nondp_path(int(ep)).exists()
+        and all(dp_path(eps, int(ep)).exists() for eps in dp_epsilons)
+    ]
+    if not epochs:
+        print("[Fig 14] No epoch has signal files for both full-FT and every DP epsilon – skipping.")
+        return None
+
+    ncols = len(epochs)
+
+    with plt.style.context(STYLE):
+        fig, axes = plt.subplots(1, ncols, figsize=(5.5 * ncols, 5), sharey=True)
+        if ncols == 1:
+            axes = [axes]
+
+        for ax, ep in zip(axes, epochs):
+            sc_m, sc_nm = load_scores(nondp_path(ep))[SIG]
+            plot_roc_curve(ax, sc_m, sc_nm, "black", ls="-", label="Full-FT")
+
+            for eps in dp_epsilons:
+                color = PALETTE_DP_EPS.get(int(eps), "gray")
+                sc_m, sc_nm = load_scores(dp_path(eps, ep))[SIG]
+                plot_roc_curve(ax, sc_m, sc_nm, color, ls="--", label=f"DP ε={eps:g}")
+
+            ax.plot([0, 1], [0, 1], color="gray", ls=":", lw=1, label="Random (AUC=0.500)")
+            ax.set_xlabel("False Positive Rate")
+            ax.set_ylabel("True Positive Rate")
+            ax.set_title(f"Epoch {ep}")
+            ax.legend(fontsize=8, loc="lower right")
+
+        fig.suptitle(
+            f"ROC Curves: Full Fine-Tuning vs DP Fine-Tuning (N={N:,}, seed={SEED}, signal={SIG})",
+            fontsize=13, y=1.02,
+        )
+        fig.tight_layout()
+        out = fig_path(14)
+        fig.savefig(out, dpi=FIG_DPI, bbox_inches="tight")
+        plt.close(fig)
+    return out
+
+
 # Main
 
 
@@ -705,6 +782,7 @@ def main():
         (11, fig11_seed_comparison),
         (12, fig12_dp_vs_nondp_n6000),
         (13, fig13_auroc_dp_vs_nondp_n6000),
+        (14, fig14_roc_curves_full_vs_dp),
     ]
 
     saved, skipped, failed = [], [], []
