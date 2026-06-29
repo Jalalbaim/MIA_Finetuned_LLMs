@@ -77,7 +77,7 @@ def save_pretrained_reference() -> None:
     PRETRAINED_CKPT.mkdir(parents=True, exist_ok=True)
     tok = AutoTokenizer.from_pretrained(MODEL_NAME)
     tok.pad_token = tok.eos_token
-    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
+    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, torch_dtype=torch.float16)
     model.save_pretrained(PRETRAINED_CKPT)
     tok.save_pretrained(PRETRAINED_CKPT)
     print(f"  Saved: {PRETRAINED_CKPT}\n")
@@ -112,7 +112,10 @@ def finetune(seed: int, n_members: int, device: torch.device) -> list[Path]:
     )
 
     # Model + optimiser (fresh per run)
-    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME).to(device)
+    # Load in fp16 on CUDA to halve parameter memory (~2.6 GB vs ~5.2 GB for 1.3B)
+    load_dtype = torch.float16 if device.type == "cuda" else torch.float32
+    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, torch_dtype=load_dtype).to(device)
+    model.gradient_checkpointing_enable()   # trade recompute for activation memory
     optimizer = AdamW(
         model.parameters(),
         lr=FINETUNE["learning_rate"],
