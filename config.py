@@ -63,7 +63,8 @@ FINETUNE = dict(
 )
 
 # Epoch sweep — primary axis for R1 → R2 regime characterisation (RQ3)
-EPOCH_SWEEP = [1, 2, 3, 5, 10, 15, 20]
+#EPOCH_SWEEP = [1, 2, 3, 5, 10, 15, 20]
+EPOCH_SWEEP = [1, 3, 5, 10]
 
 # Default N for the epoch sweep and DP experiments
 N_DEFAULT = 2_000

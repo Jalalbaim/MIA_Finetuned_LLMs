@@ -77,7 +77,7 @@ def save_pretrained_reference() -> None:
     PRETRAINED_CKPT.mkdir(parents=True, exist_ok=True)
     tok = AutoTokenizer.from_pretrained(MODEL_NAME)
     tok.pad_token = tok.eos_token
-    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, torch_dtype=torch.float16)
+    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, torch_dtype=torch.bfloat16)
     model.save_pretrained(PRETRAINED_CKPT)
     tok.save_pretrained(PRETRAINED_CKPT)
     print(f"  Saved: {PRETRAINED_CKPT}\n")
@@ -112,8 +112,9 @@ def finetune(seed: int, n_members: int, device: torch.device) -> list[Path]:
     )
 
     # Model + optimiser (fresh per run)
-    # Load in fp16 on CUDA to halve parameter memory (~2.6 GB vs ~5.2 GB for 1.3B)
-    load_dtype = torch.float16 if device.type == "cuda" else torch.float32
+    # bfloat16: same 2-byte footprint as float16 but fp32 dynamic range, so no
+    # overflow/NaN in attention scores or cross-entropy; no GradScaler needed.
+    load_dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
     model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, torch_dtype=load_dtype).to(device)
     model.gradient_checkpointing_enable()   # trade recompute for activation memory
     optimizer = AdamW(
@@ -127,10 +128,8 @@ def finetune(seed: int, n_members: int, device: torch.device) -> list[Path]:
     grad_accum  = FINETUNE.get("grad_accum_steps", 1)
     saved: list[Path] = []
 
-    # GradScaler is only valid when params are fp32 and the forward pass is fp16.
-    # With torch_dtype=float16 the params/grads are already fp16, so unscale_ would
-    # raise "Attempting to unscale FP16 gradients" — disable it in that case.
-    scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda" and load_dtype == torch.float32))
+    # bfloat16 has fp32 exponent range — no loss scaling needed.
+    scaler = torch.cuda.amp.GradScaler(enabled=False)
 
     # CSV log
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -155,7 +154,7 @@ def finetune(seed: int, n_members: int, device: torch.device) -> list[Path]:
 
             for step, batch in enumerate(loader):
                 batch = {k: v.to(device) for k, v in batch.items()}
-                with torch.autocast(device_type=device.type, dtype=torch.float16,
+                with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
                                     enabled=(device.type == "cuda")):
                     loss = model(**batch).loss
                 scaler.scale(loss / grad_accum).backward()
