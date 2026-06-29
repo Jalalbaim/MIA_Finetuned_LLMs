@@ -127,8 +127,10 @@ def finetune(seed: int, n_members: int, device: torch.device) -> list[Path]:
     grad_accum  = FINETUNE.get("grad_accum_steps", 1)
     saved: list[Path] = []
 
-    # fp16 AMP scaler — enabled only on CUDA, no-op on CPU
-    scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda"))
+    # GradScaler is only valid when params are fp32 and the forward pass is fp16.
+    # With torch_dtype=float16 the params/grads are already fp16, so unscale_ would
+    # raise "Attempting to unscale FP16 gradients" — disable it in that case.
+    scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda" and load_dtype == torch.float32))
 
     # CSV log
     LOG_DIR.mkdir(parents=True, exist_ok=True)
