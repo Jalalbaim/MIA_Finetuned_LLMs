@@ -35,7 +35,8 @@ SPLIT_TEMPLATE = DATA_DIR / "{split}_N{n}_seed{seed}.jsonl"
 PRETRAINED_CKPT = CKPT_DIR / "gpt_neo_pretrained"
 #  Model
 
-MODEL_NAME = "EleutherAI/gpt-neo-125m"   # HuggingFace model id
+#MODEL_NAME = "EleutherAI/gpt-neo-125m"   # HuggingFace model id
+MODEL_NAME = "EleutherAI/gpt-neo-1.3B"
 MAX_SEQ_LEN = 1024                         # truncation length (tokens)
 MIN_SEQ_LEN = 50                           # minimum body length kept in pool
 
@@ -93,7 +94,17 @@ PRIMARY_SIGNAL = "ref"   # SRef = log P_ft(x) - log P_pre(x)
 # All signals computed at every checkpoint
 ALL_SIGNALS = ["loss", "ref", "zlib", "mink"]
 
-#  KL estimator 
+#  Rare-token attack-utility experiment (attacks/rare_token_attack.py)
+# Restricts the s_ref-style log-ratio attack to a K-fraction subset of positions
+# selected by various rules (rare/common under P_pre, random, rare under P_ft)
+# and measures attack utility (AUROC / TPR@FPR) -- NOT a bound-tightness test.
+
+RARE_ATTACK = dict(
+    k_fractions  = [0.05, 0.10, 0.20, 0.50, 1.00],  # fraction of positions kept per arm
+    random_seeds = [0, 1, 2, 3, 4],                  # >=5 draws for the `random` arm baseline
+)
+
+#  KL estimator
 
 # Number of sequences from E used to estimate KL
 # None = use all available sequences in E
