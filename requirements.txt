@@ -1,7 +1,7 @@
 torch==2.3.1
 transformers==4.41.2          # GPT-Neo 125M weights + tokenizer
 datasets==2.20.0              # Enron email download + HF hub access
-accelerate==0.31.0
+accelerate==0.34.0
 peft==0.19.1                  # LoRA adapters; compatible with transformers 4.41.2
  
 opacus==1.5.2                 # DP-SGD with RDP accounting; requires torch>=2.0
