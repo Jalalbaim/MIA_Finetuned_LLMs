@@ -85,6 +85,7 @@ def compute_signals_for_checkpoint(
     tokenizer: AutoTokenizer,
     lora_rank: int | None = None,
     dp_eps: float | None = None,
+    mica_rank: int | None = None,
 ) -> None:
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -96,6 +97,10 @@ def compute_signals_for_checkpoint(
         ckpt_name = f"gpt_neo_ft_lora_r{lora_rank}_N{n_members}_seed{seed}_epoch{epoch}"
         ckpt_path = CKPT_OUT_DIR / ckpt_name
         out_path = RESULTS_DIR / f"signals_lora_r{lora_rank}_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
+    elif mica_rank is not None:
+        ckpt_name = f"gpt_neo_ft_mica_r{mica_rank}_N{n_members}_seed{seed}_epoch{epoch}"
+        ckpt_path = CKPT_OUT_DIR / ckpt_name
+        out_path = RESULTS_DIR / f"signals_mica_r{mica_rank}_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
     else:
         ckpt_name = f"gpt_neo_ft_N{n_members}_seed{seed}_epoch{epoch}"
         ckpt_path = CKPT_DIR / ckpt_name
@@ -186,6 +191,8 @@ def main() -> None:
                         help="LoRA rank of checkpoint to use (default: None = full fine-tuning checkpoints)")
     parser.add_argument("--dp_eps", type=float, default=None,
                         help="DP epsilon of checkpoint to use (default: None = non-DP checkpoints)")
+    parser.add_argument("--mica_rank", type=int, default=None,
+                        help="MiCA rank of checkpoint to use (default: None = non-MiCA checkpoints)")
     args = parser.parse_args()
 
     seeds  = [args.seed]  if args.seed  is not None else SEEDS
@@ -193,6 +200,7 @@ def main() -> None:
     epochs = [args.epoch] if args.epoch is not None else EPOCH_SWEEP
     lora_rank = args.lora_rank
     dp_eps    = args.dp_eps
+    mica_rank = args.mica_rank
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device    : {device}")
@@ -202,6 +210,7 @@ def main() -> None:
     print(f"Min-K frac: {MIN_K_FRACTION}")
     print(f"LoRA rank : {lora_rank}")
     print(f"DP epsilon: {dp_eps}")
+    print(f"MiCA rank : {mica_rank}")
 
     t_wall = time.time()
 
@@ -225,6 +234,7 @@ def main() -> None:
                     tokenizer=tokenizer,
                     lora_rank=lora_rank,
                     dp_eps=dp_eps,
+                    mica_rank=mica_rank,
                 )
 
             del model_pre

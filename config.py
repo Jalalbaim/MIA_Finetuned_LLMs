@@ -84,6 +84,27 @@ LORA = dict(
 # higher learning rate than full fine-tuning (FINETUNE["learning_rate"] = 5e-5).
 LORA_LEARNING_RATE = 3e-4
 
+#  MiCA fine-tuning (Minor Component Adaptation, Rüdiger & Raschka arXiv:2604.01694)
+
+MICA = dict(
+    ranks          = [4, 16, 64],   # matched to LORA["ranks"] for fair comparison
+    alpha          = 16,            # matched to LORA["alpha"]
+    dropout        = 0.0,
+    target_modules = None,          # None -> resolved to ["q_proj","v_proj"] in finetune/train_mica.py
+    n              = 6000,
+    seed           = 0,
+)
+
+# MiCA's paper uses a higher LR than LoRA (2e-3 vs 5e-4 in their ablation setup).
+# Source: Rüdiger & Raschka, arXiv:2604.01694, Table 2.
+MICA_LEARNING_RATE = 2e-3
+
+# NOTE on trainable-param budget vs LoRA:
+# At equal rank r, MiCA trains only A (shape r × d_in) while LoRA trains both
+# A (r × d_in) and B (d_out × r).  MiCA therefore has ~half the trainable
+# parameters of LoRA at the same rank.  train_mica.py prints both counts so
+# the comparison caveat is visible rather than hidden.
+
 #  Attack signals 
 
 # Fraction of lowest-probability tokens used for Min-K% signal
@@ -158,4 +179,5 @@ RESULTS_COLUMNS = [
     "dp_epsilon",        # None for non-DP runs
     "perplexity",        # None for non-DP runs
     "lora_rank",         # None for non-LoRA runs
+    "mica_rank",         # None for non-MiCA runs
 ]

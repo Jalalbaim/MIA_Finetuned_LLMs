@@ -145,11 +145,14 @@ def compute_metrics_for_checkpoint(
     seed: int, n_members: int, epoch: int,
     lora_rank: int | None = None,
     dp_eps: float | None = None,
+    mica_rank: int | None = None,
 ) -> list[dict] | None:
     if dp_eps is not None:
         signals_path = RESULTS_DIR / f"signals_dp_eps{_fmt_eps(dp_eps)}_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
     elif lora_rank is not None:
         signals_path = RESULTS_DIR / f"signals_lora_r{lora_rank}_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
+    elif mica_rank is not None:
+        signals_path = RESULTS_DIR / f"signals_mica_r{mica_rank}_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
     else:
         signals_path = RESULTS_DIR / f"signals_N{n_members}_seed{seed}_epoch{epoch}.jsonl"
 
@@ -196,6 +199,7 @@ def compute_metrics_for_checkpoint(
             "dp_epsilon":       dp_eps,
             "perplexity":       None,
             "lora_rank":        lora_rank,
+            "mica_rank":        mica_rank,
             "adv_over_bound_seq":  adv_over_bound,
         }
         results.append(row)
@@ -228,12 +232,14 @@ def main() -> None:
                         help="LoRA rank of checkpoint to use (default: None = full sweep over non-LoRA checkpoints)")
     parser.add_argument("--dp_eps", type=float, default=None,
                         help="DP epsilon of checkpoint to use (default: None = non-DP checkpoints)")
+    parser.add_argument("--mica_rank", type=int, default=None,
+                        help="MiCA rank of checkpoint to use (default: None = non-MiCA checkpoints)")
     parser.add_argument("--n",     type=int, default=None,
-                        help="N_members (required with --lora_rank or --dp_eps)")
+                        help="N_members (required with --lora_rank, --dp_eps, or --mica_rank)")
     parser.add_argument("--seed",  type=int, default=None,
-                        help="Seed (required with --lora_rank or --dp_eps)")
+                        help="Seed (required with --lora_rank, --dp_eps, or --mica_rank)")
     parser.add_argument("--epoch", type=int, default=None,
-                        help="Epoch (required with --lora_rank or --dp_eps)")
+                        help="Epoch (required with --lora_rank, --dp_eps, or --mica_rank)")
     args = parser.parse_args()
 
     out_cols = RESULTS_COLUMNS + ["adv_over_bound_seq"]
@@ -271,6 +277,25 @@ def main() -> None:
             df = df_new
         df.to_csv(out_path, index=False)
         print(f"\nAppended {len(df_new):,} LoRA row(s) → {out_path}")
+        return
+
+    if args.mica_rank is not None:
+        rows = compute_metrics_for_checkpoint(
+            args.seed, args.n, args.epoch, mica_rank=args.mica_rank
+        )
+        if not rows:
+            print("No results found — nothing to write.")
+            return
+
+        df_new = pd.DataFrame(rows, columns=out_cols)
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        if out_path.exists():
+            df_existing = pd.read_csv(out_path)
+            df = pd.concat([df_existing, df_new], ignore_index=True)
+        else:
+            df = df_new
+        df.to_csv(out_path, index=False)
+        print(f"\nAppended {len(df_new):,} MiCA (rank={args.mica_rank}) row(s) → {out_path}")
         return
 
     all_rows: list[dict] = []
