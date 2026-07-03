@@ -35,8 +35,8 @@ SPLIT_TEMPLATE = DATA_DIR / "{split}_N{n}_seed{seed}.jsonl"
 PRETRAINED_CKPT = CKPT_DIR / "gpt_neo_pretrained"
 #  Model
 
-#MODEL_NAME = "EleutherAI/gpt-neo-125m"   # HuggingFace model id
-MODEL_NAME = "EleutherAI/gpt-neo-1.3B"
+MODEL_NAME = "EleutherAI/gpt-neo-125m"   # HuggingFace model id
+#MODEL_NAME = "EleutherAI/gpt-neo-1.3B"
 MAX_SEQ_LEN = 1024                         # truncation length (tokens)
 MIN_SEQ_LEN = 50                           # minimum body length kept in pool
 
