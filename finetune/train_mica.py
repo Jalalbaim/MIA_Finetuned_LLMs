@@ -1,6 +1,17 @@
 """
-MiCA fine-tuning variant (Minor Component Adaptation, Rüdiger & Raschka)
-for GPT-Neo 125M.
+MiCA fine-tuning variant (Minor Component Adaptation, Rüdiger & Raschka,
+arXiv:2604.01694) for GPT-Neo 125M.
+
+MiCA is implemented in peft as a LoRA initialization mode
+(`LoraConfig(init_lora_weights="mica", ...)`), not a separate adapter class:
+`lora_B` is set to the r left singular vectors of the base weight associated
+with the *smallest* singular values, `lora_A` is zero-initialized, and
+`lora_B` is frozen -- only `lora_A` trains. Merge/save semantics are
+identical to vanilla LoRA (delta_W = scaling * B @ A), so this reuses the
+same training/merge loop as train_lora.py.
+
+This support landed in peft's main branch after the 0.19.1 PyPI release; it
+is not in any released peft version yet (see requirements.txt).
 
 Usage:
     python finetune/train_mica.py                 # all ranks, N=6000, seed 0
@@ -8,7 +19,6 @@ Usage:
     python finetune/train_mica.py --seed 0 --n 6000 --epochs_max 20
 """
 
-import inspect
 import sys
 import csv
 import copy
@@ -38,43 +48,28 @@ from transformers import (
     AutoModelForCausalLM,
     DataCollatorForLanguageModeling,
 )
-import peft as _peft_module
-from peft import get_peft_model
+from peft import LoraConfig, get_peft_model
 
 
-_peft_version = getattr(_peft_module, "__version__", "unknown")
-_mica_attrs   = [x for x in dir(_peft_module) if "ica" in x.lower()]
-
-print(f"\n[peft v{_peft_version}] Attrs containing 'ica': {_mica_attrs}\n")
-
-_MICA_CONFIG_CLS = None
-for _candidate_name in ("MiCAConfig", "MicaConfig", "MICAConfig"):
-    _cls = getattr(_peft_module, _candidate_name, None)
-    if _cls is not None:
-        _MICA_CONFIG_CLS = _cls
-        print(f"[peft] Resolved MiCA config class  : {_candidate_name}")
-        try:
-            print(f"[peft] MiCA config signature       : {inspect.signature(_cls)}\n")
-        except (ValueError, TypeError):
-            pass
-        break
-
-if _MICA_CONFIG_CLS is None:
+# MiCA support landed in peft's main branch (unreleased); verify the
+# installed peft actually implements it before doing anything else, rather
+# than failing deep inside get_peft_model with a confusing error.
+_init_field = LoraConfig.__dataclass_fields__["init_lora_weights"]
+if "mica" not in _init_field.metadata.get("lora_variants", []):
+    import peft as _peft_module
     print(
-        f"\n[ERROR] MiCA is not available in peft v{_peft_version}.\n"
-        f"  Searched for: MiCAConfig, MicaConfig, MICAConfig\n"
-        f"  ica-related attrs found: {_mica_attrs}\n"
-        f"\n  MiCA (Rüdiger & Raschka, arXiv:2604.01694) requires a peft version\n"
-        f"  that includes MiCAConfig (peft >= 0.15.0 or the release that ships it).\n"
-        f"  Current installed: peft v{_peft_version}\n"
-        f"\n  To upgrade:\n"
-        f"    pip install --upgrade peft\n"
-        f"\n  NOTE: After upgrading, verify that LoRA (train_lora.py) and\n"
+        f"\n[ERROR] MiCA is not available in the installed peft "
+        f"(v{getattr(_peft_module, '__version__', 'unknown')}).\n"
+        f"  MiCA (Rüdiger & Raschka, arXiv:2604.01694) is implemented as\n"
+        f"  LoraConfig(init_lora_weights='mica'), and this support has not\n"
+        f"  shipped in a peft release yet -- it only exists on peft's main\n"
+        f"  branch.\n"
+        f"\n  To install it:\n"
+        f"    pip install --upgrade \"peft @ git+https://github.com/huggingface/peft.git\"\n"
+        f"\n  NOTE: after upgrading, verify that LoRA (train_lora.py) and\n"
         f"  DP (train_dp.py) paths still function correctly under the new version.\n"
     )
     sys.exit(1)
-
-MiCAConfig = _MICA_CONFIG_CLS 
 
 
 ATTENTION_PROJ_NAMES = ("q_proj", "k_proj", "v_proj", "out_proj")
@@ -90,7 +85,7 @@ def mica_ckpt_dir(rank: int, n_members: int, seed: int, epoch: int) -> Path:
 
 def resolve_target_modules(model: AutoModelForCausalLM, configured) -> list[str]:
     """Locate GPT-Neo attention projection modules and resolve MiCA's
-    target_modules.  GPT-Neo's self-attention exposes q_proj, k_proj, v_proj,
+    target_modules. GPT-Neo's self-attention exposes q_proj, k_proj, v_proj,
     out_proj (verified by inspecting named_modules())."""
     found = set()
     for name, _ in model.named_modules():
@@ -112,29 +107,34 @@ def resolve_target_modules(model: AutoModelForCausalLM, configured) -> list[str]
 
 @torch.no_grad()
 def _verify_checkpoint(ckpt_path: Path, device: torch.device) -> None:
+    """Reload a merged checkpoint with AutoModelForCausalLM and run a forward
+    pass, confirming the merge-and-save round trip produced a plain model
+    loadable by signals/compute_signals.py and kl_estimators/compute_kl.py."""
     tokenizer = AutoTokenizer.from_pretrained(ckpt_path)
-    model     = AutoModelForCausalLM.from_pretrained(ckpt_path).to(device)
+    model = AutoModelForCausalLM.from_pretrained(ckpt_path).to(device)
     model.eval()
-    input_ids = tokenizer(
-        "Verification forward pass.", return_tensors="pt"
-    )["input_ids"].to(device)
+    input_ids = tokenizer("Verification forward pass.", return_tensors="pt")["input_ids"].to(device)
     out = model(input_ids=input_ids)
     assert torch.isfinite(out.logits).all(), (
         f"Non-finite logits in merged checkpoint {ckpt_path.name}!"
     )
-    print(
-        f"  [verify] Reloaded {ckpt_path.name} with AutoModelForCausalLM, "
-        f"forward pass logits shape: {tuple(out.logits.shape)}  [OK finite]"
-    )
+    print(f"  [verify] Reloaded {ckpt_path.name} with AutoModelForCausalLM, "
+          f"forward pass logits shape: {tuple(out.logits.shape)}  [OK finite]")
     del model
 
 
 # MiCA training
 
-def train_mica(
-    seed: int, n_members: int, rank: int, epochs: int, device: torch.device
-) -> dict:
-    
+def train_mica(seed: int, n_members: int, rank: int, epochs: int, device: torch.device) -> dict:
+    """
+    Train a fresh GPT-Neo wrapped with a rank-`rank` MiCA adapter (LoRA with
+    init_lora_weights="mica") for up to `epochs` epochs. `lora_B` is frozen
+    at its SVD-derived init; only `lora_A` trains. At each epoch in
+    EPOCH_SWEEP (<= epochs), the adapter is merged into a deep-copied base
+    model and the merged model is saved -- merge_and_unload() is destructive,
+    so the live, still-training `model` is left untouched and training
+    continues from where it left off.
+    """
     torch.manual_seed(seed)
 
     final_ckpt = mica_ckpt_dir(rank, n_members, seed, epochs)
@@ -172,58 +172,41 @@ def train_mica(
         pin_memory=(device.type == "cuda"),
     )
 
-    # Fresh pretrained base model, wrapped with a MiCA adapter
+    # Fresh pretrained base model, wrapped with a MiCA adapter. mica_init
+    # runs an SVD of each target weight at adapter-construction time, which
+    # requires float32/float16/bfloat16 (not a quantized dtype) -- the
+    # default float32 load here satisfies that.
     base_model = AutoModelForCausalLM.from_pretrained(PRETRAINED_CKPT).to(device)
 
     target_modules = resolve_target_modules(base_model, MICA["target_modules"])
-    mica_config = MiCAConfig(
+    mica_config = LoraConfig(
         r=rank,
         lora_alpha=MICA["alpha"],
         lora_dropout=MICA["dropout"],
         target_modules=target_modules,
         task_type="CAUSAL_LM",
+        init_lora_weights="mica",
     )
     model = get_peft_model(base_model, mica_config)
 
-    # ── Param-count analysis ─────────────────────────────────────────────────
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params     = sum(p.numel() for p in model.parameters())
-    print(
-        f"  Trainable params: {trainable_params:,} / {total_params:,} "
-        f"({100 * trainable_params / total_params:.4f}%)"
-    )
+    print(f"  Trainable params: {trainable_params:,} / {total_params:,} "
+          f"({100 * trainable_params / total_params:.4f}%)")
 
-    # MiCA trains only A; B must be frozen.  Detect any B-type params that are
-    # erroneously trainable and flag loudly so the invariant is visible.
-    all_trainable = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
-    b_trainable   = [
-        n for n, _ in all_trainable
-        if any(tag in n for tag in ("lora_B", "mica_B", "_B.weight", "_B.default"))
-    ]
-    base_trainable = [
-        n for n, _ in all_trainable
-        if not any(tag in n for tag in (
-            "lora_A", "mica_A", "_A.weight", "_A.default",
-            "lora_B", "mica_B", "_B.weight", "_B.default",
-        ))
-    ]
+    # MiCA freezes lora_B internally (peft registers it as a frozen weight
+    # when init_lora_weights="mica"); confirm the invariant holds rather
+    # than silently trusting it.
+    all_trainable  = [n for n, p in model.named_parameters() if p.requires_grad]
+    b_trainable    = [n for n in all_trainable if "lora_B" in n]
+    non_lora_train = [n for n in all_trainable if "lora_A" not in n and "lora_B" not in n]
     if b_trainable:
-        print(
-            f"\n  [WARNING] B-type adapter params are trainable -- "
-            f"expected frozen in MiCA.  This adapter may not be a true MiCA "
-            f"implementation.  Flagging: {b_trainable[:5]}"
-        )
+        print(f"\n  [WARNING] lora_B params are trainable -- expected frozen "
+              f"under MiCA. Flagging: {b_trainable[:5]}")
     else:
-        print(f"  [OK] No B-type adapter params are trainable (MiCA invariant holds).")
-
-    if base_trainable:
-        print(
-            f"\n  [WARNING] Base-model params are trainable -- "
-            f"expected frozen in MiCA: {base_trainable[:5]}"
-        )
-
-    a_names = [n for n, _ in all_trainable][:8]
-    print(f"  Trainable param names (first 8): {a_names}")
+        print(f"  [OK] lora_B is frozen (MiCA invariant holds); only lora_A trains.")
+    if non_lora_train:
+        print(f"\n  [WARNING] Non-adapter params are trainable: {non_lora_train[:5]}")
 
     optimizer = AdamW(
         (p for p in model.parameters() if p.requires_grad),
@@ -289,6 +272,12 @@ def train_mica(
                 if (ckpt / "config.json").exists():
                     note = f"skip (exists): {ckpt.name}"
                 else:
+                    # Deep-copy the (small) PEFT model to CPU, merge the
+                    # MiCA adapter into that copy, and save the merged
+                    # result. merge_and_unload() mutates the model it's
+                    # called on, so the original `model` -- still wrapping
+                    # the live adapter on `device` -- is left untouched and
+                    # training continues unaffected.
                     ckpt.mkdir(parents=True, exist_ok=True)
                     merge_copy = copy.deepcopy(model).to("cpu")
                     merged = merge_copy.merge_and_unload()
@@ -349,7 +338,7 @@ def main() -> None:
     )
     print(
         f"\nNOTE — param budget vs LoRA at equal rank:\n"
-        f"  MiCA trains only A (r×d_in); LoRA trains A (r×d_in) + B (d_out×r).\n"
+        f"  MiCA trains only lora_A (r×d_in); LoRA trains lora_A (r×d_in) + lora_B (d_out×r).\n"
         f"  MiCA therefore has ~half the trainable params of LoRA at the same rank.\n"
         f"  Both counts are printed per-rank below so the caveat is auditable.\n"
     )
@@ -370,7 +359,7 @@ def main() -> None:
     print(f"\n{'='*64}")
     print(f"Summary — N={args.n:,}  seed={args.seed}")
     print(
-        f"  (MiCA trains only A; LoRA would train ~2× params at the same rank)"
+        f"  (MiCA trains only lora_A; LoRA would train ~2× params at the same rank)"
     )
     hdr = (
         f"  {'rank':>5} | {'trainable_params':>16} | "
