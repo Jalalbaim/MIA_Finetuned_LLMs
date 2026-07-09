@@ -31,8 +31,10 @@ POOL_FILE     = DATA_DIR / "pool.jsonl"
 SPLIT_TEMPLATE = DATA_DIR / "{split}_N{n}_seed{seed}.jsonl"
 
 # pretrained reference model saved once (Step 3)
-PRETRAINED_CKPT = Path("/kaggle/input/datasets/mohamedjalalbaim/gpt-neo-125m-finetuned-enron/checkpoints/gpt_neo_pretrained")
+#PRETRAINED_CKPT = Path("/kaggle/input/datasets/mohamedjalalbaim/gpt-neo-125m-finetuned-enron/checkpoints/gpt_neo_pretrained")
 #PRETRAINED_CKPT = CKPT_DIR / "gpt_neo_pretrained"
+PRETRAINED_CKPT = Path("/kaggle/input/datasets/mohamedjalalbaim/gpt-neo-125m-finetuned-enron/checkpoints/gpt_neo_pretrained")
+
 #  Model
 
 MODEL_NAME = "EleutherAI/gpt-neo-125m"   # HuggingFace model id
