@@ -3,7 +3,11 @@ torchvision==0.20.1           # matched pair for torch 2.5.1; not used directly,
 transformers==4.46.3          # GPT-Neo 125M weights + tokenizer; must be >=4.44 for EncoderDecoderCache (peft 0.19.1 import-time dependency)
 datasets==2.20.0              # Enron email download + HF hub access
 accelerate==0.34.0
-peft==0.19.1                  # LoRA + MiCA adapters (MiCAConfig requires peft>=0.15.0)
+peft @ git+https://github.com/huggingface/peft.git@1598ecb8fc504bfcb08b9b232b295414a729d7ed
+                               # LoRA + MiCA adapters. MiCA (init_lora_weights="mica") is
+                               # unreleased -- not in peft 0.19.1 on PyPI, only on `main` as
+                               # of the pinned commit above. Re-pin to a newer commit (or
+                               # switch to a PyPI pin) once peft cuts a release containing it.
  
 opacus==1.5.2                 # DP-SGD with RDP accounting; requires torch>=2.0
  
