@@ -20,3 +20,5 @@ checkpoints.zip
 __pycache__/
 
 dp_6000/
+
+results_MiCA/
