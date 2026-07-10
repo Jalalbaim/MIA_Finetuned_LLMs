@@ -10,8 +10,8 @@ Usage:
 import argparse
 import json
 import math
+import re
 import sys
-import warnings
 from pathlib import Path
 
 import numpy as np
@@ -21,19 +21,86 @@ from sklearn.metrics import roc_auc_score, roc_curve
 _ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_ROOT))
 
+# This file prints unicode characters (→, ←) for readability; Windows
+# terminals default stdout to cp1252, which can't encode them and crashes
+# mid-run. Force UTF-8 so the summary/RQ1-check output at the end always
+# prints instead of dying right after the CSV write.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")
+
 from config import (
     ALL_SIGNALS,
-    CORPUS_SIZES,
-    EPOCH_SWEEP,
     FPR_THRESHOLDS,
     PRIMARY_SIGNAL,
     RESULTS_COLUMNS,
     RESULTS_DIR,
-    SEEDS,
     TV_N_BINS,
 )
 
 _SIGNAL_KEY = {s: f"s_{s}" for s in ALL_SIGNALS}
+
+# Filename patterns written by signals/compute_signals.py. Checked in this
+# order (dp/lora/mica prefixes first) since the plain pattern would not
+# otherwise conflict, but explicit ordering keeps the intent obvious.
+_DP_RE   = re.compile(r"^signals_dp_eps(?P<eps>[\d.]+)_N(?P<n>\d+)_seed(?P<seed>\d+)_epoch(?P<epoch>\d+)\.jsonl$")
+_LORA_RE = re.compile(r"^signals_lora_r(?P<rank>\d+)_N(?P<n>\d+)_seed(?P<seed>\d+)_epoch(?P<epoch>\d+)\.jsonl$")
+_MICA_RE = re.compile(r"^signals_mica_r(?P<rank>\d+)_N(?P<n>\d+)_seed(?P<seed>\d+)_epoch(?P<epoch>\d+)\.jsonl$")
+_PLAIN_RE = re.compile(r"^signals_N(?P<n>\d+)_seed(?P<seed>\d+)_epoch(?P<epoch>\d+)\.jsonl$")
+
+
+def discover_checkpoints() -> list[dict]:
+    """Scan RESULTS_DIR for every signals_*.jsonl file actually on disk and
+    parse (seed, n_members, epoch, variant) out of the filename, instead of
+    driving the sweep from config lists (SEEDS/CORPUS_SIZES/EPOCH_SWEEP/
+    LORA['ranks']/DP['epsilon_values']/MICA['ranks']). This way the metrics
+    sweep always matches whatever signals have actually been computed,
+    including ranks/epsilons/epochs outside the configured sweep axes."""
+    found: list[dict] = []
+    for path in sorted(RESULTS_DIR.glob("signals_*.jsonl")):
+        name = path.name
+
+        m = _DP_RE.match(name)
+        if m:
+            found.append({
+                "seed": int(m["seed"]), "n": int(m["n"]), "epoch": int(m["epoch"]),
+                "dp_eps": float(m["eps"]), "lora_rank": None, "mica_rank": None,
+            })
+            continue
+
+        m = _LORA_RE.match(name)
+        if m:
+            found.append({
+                "seed": int(m["seed"]), "n": int(m["n"]), "epoch": int(m["epoch"]),
+                "dp_eps": None, "lora_rank": int(m["rank"]), "mica_rank": None,
+            })
+            continue
+
+        m = _MICA_RE.match(name)
+        if m:
+            found.append({
+                "seed": int(m["seed"]), "n": int(m["n"]), "epoch": int(m["epoch"]),
+                "dp_eps": None, "lora_rank": None, "mica_rank": int(m["rank"]),
+            })
+            continue
+
+        m = _PLAIN_RE.match(name)
+        if m:
+            found.append({
+                "seed": int(m["seed"]), "n": int(m["n"]), "epoch": int(m["epoch"]),
+                "dp_eps": None, "lora_rank": None, "mica_rank": None,
+            })
+            continue
+
+        print(f"  [warn] Unrecognized signals filename, skipping: {name}")
+
+    def sort_key(c: dict):
+        variant = (1, c["dp_eps"]) if c["dp_eps"] is not None else \
+                  (2, c["lora_rank"]) if c["lora_rank"] is not None else \
+                  (3, c["mica_rank"]) if c["mica_rank"] is not None else (0, 0)
+        return (variant, c["seed"], c["n"], c["epoch"])
+
+    found.sort(key=sort_key)
+    return found
 
 
 def load_scores(signals_path: Path) -> dict[str, tuple[list[float], list[float]]]:
@@ -298,14 +365,17 @@ def main() -> None:
         print(f"\nAppended {len(df_new):,} MiCA (rank={args.mica_rank}) row(s) → {out_path}")
         return
 
-    all_rows: list[dict] = []
+    checkpoints = discover_checkpoints()
+    print(f"Discovered {len(checkpoints):,} signals file(s) in {RESULTS_DIR}")
 
-    for seed in SEEDS:
-        for n in CORPUS_SIZES:
-            for epoch in EPOCH_SWEEP:
-                rows = compute_metrics_for_checkpoint(seed, n, epoch)
-                if rows:
-                    all_rows.extend(rows)
+    all_rows: list[dict] = []
+    for ckpt in checkpoints:
+        rows = compute_metrics_for_checkpoint(
+            ckpt["seed"], ckpt["n"], ckpt["epoch"],
+            lora_rank=ckpt["lora_rank"], dp_eps=ckpt["dp_eps"], mica_rank=ckpt["mica_rank"],
+        )
+        if rows:
+            all_rows.extend(rows)
 
     if not all_rows:
         print("No results found — nothing to write.")
