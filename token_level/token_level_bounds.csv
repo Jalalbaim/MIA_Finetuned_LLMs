@@ -1,0 +1,2 @@
+seed,n_members,epochs,m_samples,seq_len_cap,kl_seq_hat,bh_seq_hat,pinsker_seq_hat,kl_tok_hat,bh_tok_hat,adv_ref_existing
+0,2000,1,4,16,21.853195190429688,0.999999999838472,3.305540439204283,18.286314010620117,11.983412742614746,0.258
