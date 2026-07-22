@@ -222,15 +222,25 @@ def estimate_config(
     if neg_mag > 1e-4:
         print(f"  WARNING: KL_t negative beyond float noise (max |neg| = {neg_mag:.6f}); clamped to 0.")
 
-    bh_t_all = torch.sqrt(1.0 - torch.exp(-kl_t_clamped))  # (m, T), per-position BH transform
+    bh_t_all = torch.sqrt(1.0 - torch.exp(-kl_t_clamped))  # (m, T), per-position BH (R2) transform
+
+    # Theorem thm:tok (token-level bound): each position's contribution is
+    # the MINIMUM of the Pinsker (R1, tight for KL_t <~ 1.59) and BH (R2,
+    # tight for KL_t >~ 1.59) terms, not the BH term alone -- Pinsker is
+    # strictly tighter for small per-token KL, so always taking BH
+    # overstates the bound. This min is only used for the aggregated
+    # token-level bound below; the per-position CSV dump keeps logging the
+    # plain bh_t (unchanged).
+    pinsker_t_all = torch.sqrt(kl_t_clamped / 2.0)          # (m, T), per-position Pinsker (R1) term
+    tok_bound_t_all = torch.minimum(pinsker_t_all, bh_t_all)  # (m, T), per-position min(R1, R2)
 
     # Token-level estimator: sum over positions THEN average over samples
     # (transform-then-average, per spec -- summing after transform, never
     # transform the summed KL).
-    kl_tok_per_sample = kl_t_clamped.sum(dim=1)   # (m,)
-    bh_tok_per_sample = bh_t_all.sum(dim=1)       # (m,)
+    kl_tok_per_sample = kl_t_clamped.sum(dim=1)        # (m,)
+    tok_bound_per_sample = tok_bound_t_all.sum(dim=1)  # (m,)
     kl_tok_hat = kl_tok_per_sample.mean().item()
-    bh_tok_hat = bh_tok_per_sample.mean().item()
+    tok_bound_hat = tok_bound_per_sample.mean().item()
 
     # Sequence-level estimator, from the SAME samples: sum of realized-token
     # log-ratios over the whole sequence, then average, THEN transform once.
@@ -244,13 +254,15 @@ def estimate_config(
     bh_seq_hat = math.sqrt(1.0 - math.exp(-kl_seq_hat))
     pinsker_seq_hat = math.sqrt(kl_seq_hat / 2.0)
 
-    # bh_tok_hat is a sum of T per-position BH terms (each in [0,1)), valid
-    # via the chain-rule/triangle-inequality TV bound (TV_seq <= sum_t TV_t)
-    # but NOT itself constrained to [0,1] -- with T=128 terms each close to
-    # 1, the sum can run into the tens. TV_seq <= 1 always holds trivially,
-    # so bh_tok_hat_capped is what's actually usable as a bound; bh_tok_hat
-    # is kept uncapped as a diagnostic of how loose that composition is.
-    bh_tok_hat_capped = min(bh_tok_hat, 1.0)
+    # tok_bound_hat is a sum of T per-position min(Pinsker, BH) terms (each
+    # in [0,1)), valid via the chain-rule/triangle-inequality TV bound
+    # (TV_seq <= sum_t TV_t) but NOT itself constrained to [0,1] -- with
+    # T=128 terms, the sum can still exceed 1 even after tightening each
+    # term with the min. TV_seq <= 1 always holds trivially, so
+    # tok_bound_hat_capped is what's actually usable as a bound;
+    # tok_bound_hat is kept uncapped as a diagnostic of how loose that
+    # composition is.
+    tok_bound_hat_capped = min(tok_bound_hat, 1.0)
 
     elapsed = time.time() - t0
 
@@ -276,22 +288,22 @@ def estimate_config(
     if not in_range:
         raise RuntimeError(f"bh_seq_hat={bh_seq_hat} outside [0,1] — unclipped negative KL or overflow, not silently clamping.")
 
-    # bh_tok_hat: raw value is a sum of T bounded terms, so it is NOT itself
-    # bounded by [0,1] (see comment above) -- only require finite & >= 0.
-    tok_finite_nonneg = math.isfinite(bh_tok_hat) and bh_tok_hat >= 0.0
-    print(f"    bh_tok_hat={bh_tok_hat:.4f}  (raw, uncapped composition bound -- informational)")
-    print(f"    bh_tok_hat_capped={bh_tok_hat_capped:.4f}  (used for adv<=bound checks)")
+    # tok_bound_hat: raw value is a sum of T bounded terms, so it is NOT
+    # itself bounded by [0,1] (see comment above) -- only require finite & >= 0.
+    tok_finite_nonneg = math.isfinite(tok_bound_hat) and tok_bound_hat >= 0.0
+    print(f"    tok_bound_hat={tok_bound_hat:.4f}  (raw, uncapped composition bound -- informational)")
+    print(f"    tok_bound_hat_capped={tok_bound_hat_capped:.4f}  (used for adv<=bound checks)")
     print(f"    finite & >=0: {'PASS' if tok_finite_nonneg else 'FAIL — STOP, this indicates a bug'}")
     if not tok_finite_nonneg:
-        raise RuntimeError(f"bh_tok_hat={bh_tok_hat} not finite/non-negative — unclipped negative KL or overflow, not silently clamping.")
+        raise RuntimeError(f"tok_bound_hat={tok_bound_hat} not finite/non-negative — unclipped negative KL or overflow, not silently clamping.")
 
-    direction_ok = bh_seq_hat <= bh_tok_hat_capped
-    print(f"    bh_seq_hat <= bh_tok_hat_capped: {bh_seq_hat:.4f} <= {bh_tok_hat_capped:.4f}  "
+    direction_ok = bh_seq_hat <= tok_bound_hat_capped
+    print(f"    bh_seq_hat <= tok_bound_hat_capped: {bh_seq_hat:.4f} <= {tok_bound_hat_capped:.4f}  "
           f"[{'expected direction' if direction_ok else 'violated — note but not necessarily a bug'}]")
 
     print(f"    kl_seq_hat={kl_seq_hat:.4f}  bh_seq_hat={bh_seq_hat:.4f}  "
           f"pinsker_seq_hat={pinsker_seq_hat:.4f}  kl_tok_hat={kl_tok_hat:.4f}  "
-          f"bh_tok_hat={bh_tok_hat:.4f}  bh_tok_hat_capped={bh_tok_hat_capped:.4f}")
+          f"tok_bound_hat={tok_bound_hat:.4f}  tok_bound_hat_capped={tok_bound_hat_capped:.4f}")
     print(f"    elapsed: {elapsed:.1f}s")
 
     if per_position_out is not None:
@@ -321,8 +333,8 @@ def estimate_config(
         "bh_seq_hat": bh_seq_hat,
         "pinsker_seq_hat": pinsker_seq_hat,
         "kl_tok_hat": kl_tok_hat,
-        "bh_tok_hat": bh_tok_hat,
-        "bh_tok_hat_capped": bh_tok_hat_capped,
+        "tok_bound_hat": tok_bound_hat,
+        "tok_bound_hat_capped": tok_bound_hat_capped,
     }
 
 
@@ -346,18 +358,18 @@ def join_adv_existing(rows: list[dict]) -> pd.DataFrame:
 
     df = df.merge(ref, on=["seed", "n_members", "epochs"], how="left")
 
-    print("\n  --- adv_ref_existing <= bh_seq_hat and bh_tok_hat_capped ---")
+    print("\n  --- adv_ref_existing <= bh_seq_hat and tok_bound_hat_capped ---")
     for _, r in df.iterrows():
         if pd.isna(r["adv_ref_existing"]):
             print(f"    seed={r['seed']} n={r['n_members']} epoch={r['epochs']}: "
                   f"no matching adv row in metrics_all.csv (signal='ref')")
             continue
         ok_seq = r["adv_ref_existing"] <= r["bh_seq_hat"] + 1e-6
-        ok_tok = r["adv_ref_existing"] <= r["bh_tok_hat_capped"] + 1e-6
+        ok_tok = r["adv_ref_existing"] <= r["tok_bound_hat_capped"] + 1e-6
         status = "PASS" if (ok_seq and ok_tok) else "FAIL"
         print(f"    [{status}] seed={r['seed']} n={r['n_members']} epoch={r['epochs']}: "
               f"adv={r['adv_ref_existing']:.4f}  bh_seq_hat={r['bh_seq_hat']:.4f}  "
-              f"bh_tok_hat_capped={r['bh_tok_hat_capped']:.4f}"
+              f"tok_bound_hat_capped={r['tok_bound_hat_capped']:.4f}"
               + ("" if status == "PASS" else "  <-- VIOLATION"))
 
     return df
@@ -395,10 +407,10 @@ def main() -> None:
 
     if args.pilot:
         configs = [
-            {"seed": 0, "n": 500, "epoch": 1},
-            {"seed": 0, "n": 500, "epoch": 5},
-            {"seed": 0, "n": 500, "epoch": 10},
-            {"seed": 0, "n": 500, "epoch": 20},
+            {"seed": 0, "n": 2000, "epoch": 1},
+            {"seed": 0, "n": 2000, "epoch": 5},
+            {"seed": 0, "n": 2000, "epoch": 10},
+            {"seed": 0, "n": 2000, "epoch": 20},
         ]
     elif args.full:
         configs = discover_full_finetune_grid(ckpt_root)
@@ -432,7 +444,7 @@ def main() -> None:
     df = join_adv_existing(rows)
     out_cols = ["seed", "n_members", "epochs", "m_samples", "seq_len_cap",
                 "kl_seq_hat", "bh_seq_hat", "pinsker_seq_hat",
-                "kl_tok_hat", "bh_tok_hat", "bh_tok_hat_capped", "adv_ref_existing"]
+                "kl_tok_hat", "tok_bound_hat", "tok_bound_hat_capped", "adv_ref_existing"]
     df = df[out_cols]
 
     out_path = TOKEN_LEVEL_DIR / "token_level_bounds.csv"
