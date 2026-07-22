@@ -407,10 +407,10 @@ def main() -> None:
 
     if args.pilot:
         configs = [
-            {"seed": 0, "n": 2000, "epoch": 1},
-            {"seed": 0, "n": 2000, "epoch": 5},
-            {"seed": 0, "n": 2000, "epoch": 10},
-            {"seed": 0, "n": 2000, "epoch": 20},
+            {"seed": 0, "n": 6000, "epoch": 1},
+            {"seed": 0, "n": 6000, "epoch": 5},
+            {"seed": 0, "n": 6000, "epoch": 10},
+            {"seed": 0, "n": 6000, "epoch": 20},
         ]
     elif args.full:
         configs = discover_full_finetune_grid(ckpt_root)
@@ -425,7 +425,7 @@ def main() -> None:
     rows = []
     for cfg in configs:
         per_pos_out = None
-        if cfg["n"] == 2000 and cfg["seed"] == 0 and cfg["epoch"] == 20:
+        if cfg["n"] == 6000 and cfg["seed"] == 0 and cfg["epoch"] == 20:
             per_pos_out = TOKEN_LEVEL_DIR / "token_level_bounds_per_position.csv"
 
         result = estimate_config(
