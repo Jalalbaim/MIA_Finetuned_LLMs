@@ -244,6 +244,14 @@ def estimate_config(
     bh_seq_hat = math.sqrt(1.0 - math.exp(-kl_seq_hat))
     pinsker_seq_hat = math.sqrt(kl_seq_hat / 2.0)
 
+    # bh_tok_hat is a sum of T per-position BH terms (each in [0,1)), valid
+    # via the chain-rule/triangle-inequality TV bound (TV_seq <= sum_t TV_t)
+    # but NOT itself constrained to [0,1] -- with T=128 terms each close to
+    # 1, the sum can run into the tens. TV_seq <= 1 always holds trivially,
+    # so bh_tok_hat_capped is what's actually usable as a bound; bh_tok_hat
+    # is kept uncapped as a diagnostic of how loose that composition is.
+    bh_tok_hat_capped = min(bh_tok_hat, 1.0)
+
     elapsed = time.time() - t0
 
     # Sanity checks (printed for every config, never skipped)
@@ -254,18 +262,36 @@ def estimate_config(
     print(f"    kl_tok_hat={kl_tok_hat:.4f}  kl_seq_hat(raw)={kl_seq_hat_raw:.4f}  ratio={ratio:.4f}"
           f"  [{'OK' if ratio_ok else 'FLAG: >20% off — same estimand should roughly agree'}]")
 
-    for name, val in (("bh_seq_hat", bh_seq_hat), ("bh_tok_hat", bh_tok_hat)):
-        in_range = 0.0 <= val < 1.0
-        print(f"    {name}={val:.4f}  in [0,1): {'PASS' if in_range else 'FAIL — STOP, this indicates a bug'}")
-        if not in_range:
-            raise RuntimeError(f"{name}={val} outside [0,1) — unclipped negative KL or overflow, not silently clamping.")
+    # bh_seq_hat: closed interval, val==1.0 is reachable in float64 once KL
+    # is large enough that exp(-KL) underflows below machine epsilon
+    # relative to 1.0 (roughly KL > ~37) -- 1.0 - exp(-KL) then rounds to
+    # exactly 1.0 even though the true bound is strictly < 1. That's a
+    # precision limit, not a sign of negative KL / overflow, so it does not raise.
+    in_range = 0.0 <= bh_seq_hat <= 1.0
+    note = ""
+    if bh_seq_hat == 1.0:
+        note = ("  (float64 saturation: exp(-KL) < machine eps for this KL -- "
+                "bound is valid, just not distinguishable from 1 in double precision)")
+    print(f"    bh_seq_hat={bh_seq_hat:.4f}  in [0,1]: {'PASS' if in_range else 'FAIL — STOP, this indicates a bug'}{note}")
+    if not in_range:
+        raise RuntimeError(f"bh_seq_hat={bh_seq_hat} outside [0,1] — unclipped negative KL or overflow, not silently clamping.")
 
-    direction_ok = bh_seq_hat <= bh_tok_hat
-    print(f"    bh_seq_hat <= bh_tok_hat: {bh_seq_hat:.4f} <= {bh_tok_hat:.4f}  "
+    # bh_tok_hat: raw value is a sum of T bounded terms, so it is NOT itself
+    # bounded by [0,1] (see comment above) -- only require finite & >= 0.
+    tok_finite_nonneg = math.isfinite(bh_tok_hat) and bh_tok_hat >= 0.0
+    print(f"    bh_tok_hat={bh_tok_hat:.4f}  (raw, uncapped composition bound -- informational)")
+    print(f"    bh_tok_hat_capped={bh_tok_hat_capped:.4f}  (used for adv<=bound checks)")
+    print(f"    finite & >=0: {'PASS' if tok_finite_nonneg else 'FAIL — STOP, this indicates a bug'}")
+    if not tok_finite_nonneg:
+        raise RuntimeError(f"bh_tok_hat={bh_tok_hat} not finite/non-negative — unclipped negative KL or overflow, not silently clamping.")
+
+    direction_ok = bh_seq_hat <= bh_tok_hat_capped
+    print(f"    bh_seq_hat <= bh_tok_hat_capped: {bh_seq_hat:.4f} <= {bh_tok_hat_capped:.4f}  "
           f"[{'expected direction' if direction_ok else 'violated — note but not necessarily a bug'}]")
 
     print(f"    kl_seq_hat={kl_seq_hat:.4f}  bh_seq_hat={bh_seq_hat:.4f}  "
-          f"pinsker_seq_hat={pinsker_seq_hat:.4f}  kl_tok_hat={kl_tok_hat:.4f}  bh_tok_hat={bh_tok_hat:.4f}")
+          f"pinsker_seq_hat={pinsker_seq_hat:.4f}  kl_tok_hat={kl_tok_hat:.4f}  "
+          f"bh_tok_hat={bh_tok_hat:.4f}  bh_tok_hat_capped={bh_tok_hat_capped:.4f}")
     print(f"    elapsed: {elapsed:.1f}s")
 
     if per_position_out is not None:
@@ -296,6 +322,7 @@ def estimate_config(
         "pinsker_seq_hat": pinsker_seq_hat,
         "kl_tok_hat": kl_tok_hat,
         "bh_tok_hat": bh_tok_hat,
+        "bh_tok_hat_capped": bh_tok_hat_capped,
     }
 
 
@@ -319,18 +346,18 @@ def join_adv_existing(rows: list[dict]) -> pd.DataFrame:
 
     df = df.merge(ref, on=["seed", "n_members", "epochs"], how="left")
 
-    print("\n  --- adv_ref_existing <= bh_seq_hat and bh_tok_hat ---")
+    print("\n  --- adv_ref_existing <= bh_seq_hat and bh_tok_hat_capped ---")
     for _, r in df.iterrows():
         if pd.isna(r["adv_ref_existing"]):
             print(f"    seed={r['seed']} n={r['n_members']} epoch={r['epochs']}: "
                   f"no matching adv row in metrics_all.csv (signal='ref')")
             continue
         ok_seq = r["adv_ref_existing"] <= r["bh_seq_hat"] + 1e-6
-        ok_tok = r["adv_ref_existing"] <= r["bh_tok_hat"] + 1e-6
+        ok_tok = r["adv_ref_existing"] <= r["bh_tok_hat_capped"] + 1e-6
         status = "PASS" if (ok_seq and ok_tok) else "FAIL"
         print(f"    [{status}] seed={r['seed']} n={r['n_members']} epoch={r['epochs']}: "
               f"adv={r['adv_ref_existing']:.4f}  bh_seq_hat={r['bh_seq_hat']:.4f}  "
-              f"bh_tok_hat={r['bh_tok_hat']:.4f}"
+              f"bh_tok_hat_capped={r['bh_tok_hat_capped']:.4f}"
               + ("" if status == "PASS" else "  <-- VIOLATION"))
 
     return df
@@ -368,8 +395,10 @@ def main() -> None:
 
     if args.pilot:
         configs = [
-            {"seed": 0, "n": 2000, "epoch": 1},
-            {"seed": 0, "n": 2000, "epoch": 20},
+            {"seed": 0, "n": 500, "epoch": 1},
+            {"seed": 0, "n": 500, "epoch": 5},
+            {"seed": 0, "n": 500, "epoch": 10},
+            {"seed": 0, "n": 500, "epoch": 20},
         ]
     elif args.full:
         configs = discover_full_finetune_grid(ckpt_root)
@@ -403,7 +432,7 @@ def main() -> None:
     df = join_adv_existing(rows)
     out_cols = ["seed", "n_members", "epochs", "m_samples", "seq_len_cap",
                 "kl_seq_hat", "bh_seq_hat", "pinsker_seq_hat",
-                "kl_tok_hat", "bh_tok_hat", "adv_ref_existing"]
+                "kl_tok_hat", "bh_tok_hat", "bh_tok_hat_capped", "adv_ref_existing"]
     df = df[out_cols]
 
     out_path = TOKEN_LEVEL_DIR / "token_level_bounds.csv"
