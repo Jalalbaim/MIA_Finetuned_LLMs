@@ -69,6 +69,9 @@ def main() -> None:
     ap.add_argument("--epoch", type=int, default=None)
     ap.add_argument("--max-hours", type=float, default=DEFAULT_MAX_HOURS)
     ap.add_argument("--bootstrap", type=int, default=None)
+    ap.add_argument("--keep-epochs", type=int, nargs="*", default=None,
+                    help="Epochs whose checkpoints survive pruning. Needed only for configs "
+                         "later fed to E1d / E5d / the neighbourhood attack.")
     args = ap.parse_args()
 
     py = sys.executable
@@ -85,6 +88,8 @@ def main() -> None:
                 cmd += [flag, val]
         if args.n:
             cmd += ["--n", str(args.n)]
+        if args.keep_epochs:
+            cmd += ["--keep-epochs"] + [str(e) for e in args.keep_epochs]
         raise SystemExit(_run(cmd))
 
     if args.stage == "cache":

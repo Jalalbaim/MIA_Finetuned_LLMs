@@ -121,7 +121,13 @@ def resolve_dtype(device: torch.device) -> torch.dtype:
     *and* autocasts, then wraps the step in a GradScaler with enabled=False)."""
     if device.type != "cuda":
         return torch.float32
-    if DEFAULT_DTYPE == "bf16" or torch.cuda.is_bf16_supported():
+    # NOT torch.cuda.is_bf16_supported(): it defaults to
+    # including_emulation=True and so returns True on a T4 (sm_75), which has
+    # no native bf16 at all. That silently selects an emulated path. Only
+    # sm_80+ (A100 and later) has real bf16 tensor cores; the P100 (sm_60) and
+    # T4 (sm_75) that E1 actually runs on must use fp16 + dynamic loss scaling.
+    major, _ = torch.cuda.get_device_capability(device if device.index is not None else None)
+    if major >= 8:
         return torch.bfloat16
     return torch.float16
 

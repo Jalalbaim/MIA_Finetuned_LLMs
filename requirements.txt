@@ -25,6 +25,12 @@ tqdm==4.66.4
 jsonlines==4.0.0
 pyyaml==6.0.1
 
+huggingface_hub==0.36.2       # E1 checkpoint/cache sink; Kaggle sessions die at 12h so
+                              # runs/*/training_state.pt and cache/*.npz are pushed to a
+                              # private Hub dataset repo. Pinned explicitly rather than
+                              # relying on the transitive pull from transformers/datasets.
+pytest==9.0.3                 # E1_scaled_xps/tests/test_e1.py -- the Week 1 harness gate
+
 nbformat==5.10.4              # build/read figures/figure_plotting.ipynb
 nbclient==0.10.0              # headless execution of figure_plotting.ipynb
 ipykernel==6.29.5              # Python kernel for notebook execution

@@ -131,6 +131,16 @@ class RunConfig:
     def ckpt_dir(self, epoch: int) -> Path:
         return self.run_dir / f"epoch{epoch}"
 
+    @property
+    def reference_cache_path(self) -> Path:
+        """P_pre log-probs over this run's pools.
+
+        The reference model does not change across epochs, so recomputing it at
+        every grid checkpoint doubles the cost of the eval pass for nothing --
+        measured at 410M, caching took 507s per checkpoint against 59s of
+        training. Computed once, reused seven times."""
+        return E1_CACHE_DIR / self.run_id / "reference.npz"
+
     def cache_path(self, epoch: int, pool: str = "attack") -> Path:
         """Per-token log-prob cache for one checkpoint. `pool` distinguishes
         the member+nonmember attack pool from the held-out utility pool."""
@@ -167,10 +177,39 @@ class RunConfig:
                 print(f"  [warn] Unreadable run config {cfg_path}: {exc}")
         return found
 
+    @property
+    def done_marker(self) -> Path:
+        """Written when the epoch grid finishes.
+
+        Completion cannot be inferred from checkpoints on disk: they are pruned
+        once their log-prob cache exists (7 checkpoints + resume state is
+        ~10.6GB per 410M run, against ~20GB of Kaggle disk). Without this
+        marker, rerunning a finished command would retrain from scratch."""
+        return self.run_dir / "COMPLETED"
+
+    def is_complete(self) -> bool:
+        return self.done_marker.exists()
+
+    def mark_complete(self) -> None:
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        self.done_marker.write_text(
+            json.dumps({"run_id": self.run_id,
+                        "cached_epochs": self.cached_epochs()}, indent=2),
+            encoding="utf-8",
+        )
+
     def completed_epochs(self) -> list[int]:
-        """Epochs in the grid whose checkpoint is fully written on disk."""
+        """Epochs in the grid whose checkpoint is fully written on disk.
+
+        Note this shrinks as checkpoints are pruned -- use cached_epochs() to
+        ask what is evaluable, and this only to ask what still has a model."""
         return [e for e in sorted(self.epoch_grid)
                 if (self.ckpt_dir(e) / "config.json").exists()]
+
+    def cached_epochs(self) -> list[int]:
+        """Epochs with a log-prob cache. This is what E1c can evaluate, and it
+        survives checkpoint pruning."""
+        return [e for e in sorted(self.epoch_grid) if self.cache_path(e).exists()]
 
     def __str__(self) -> str:
         return self.run_id

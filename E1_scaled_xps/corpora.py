@@ -54,12 +54,47 @@ from membership_assignment import save_split, load_split as _load_split_raw
 # Corpus registry
 
 @dataclass(frozen=True)
+class HFSource:
+    """One downloadable source. `configs` holds more than one entry when a
+    single config is too small to fill a pool -- they are concatenated."""
+    dataset_id: str
+    configs: tuple[str | None, ...]
+    split: str
+    text_column: str
+
+
+def _months(start: str, end: str) -> tuple[str, ...]:
+    """('2024-01', '2025-06') -> ('2024-01', ..., '2025-06')."""
+    sy, sm = (int(x) for x in start.split("-"))
+    ey, em = (int(x) for x in end.split("-"))
+    out = []
+    y, m = sy, sm
+    while (y, m) <= (ey, em):
+        out.append(f"{y}-{m:02d}")
+        m += 1
+        if m == 13:
+            y, m = y + 1, 1
+    return tuple(out)
+
+
+# The clean-room window. Pythia-deduped is trained on the Pile, assembled in
+# 2020, so anything published from 2024 on postdates every target model's
+# pretraining data by years -- that margin is the contamination argument.
+#
+# RealTimeData/bbc_news_alltime is partitioned into YYYY-MM configs running
+# 2017-01 .. 2025-06 (verified against the dataset card), with ~400-3400
+# articles per month. One month cannot fill a 10k pool, so eighteen are
+# concatenated. Do not widen this window backwards past 2021 without
+# rechecking the contamination claim.
+NEWS_START, NEWS_END = "2024-01", "2025-06"
+
+
+@dataclass(frozen=True)
 class CorpusSpec:
     key: str
     description: str
-    # HF dataset candidates tried in order: (dataset_id, config, split, text_column).
     # None for `enron`, which reads the already-prepared workshop pool.
-    hf_candidates: tuple[tuple, ...] | None
+    hf_candidates: tuple[HFSource, ...] | None
     min_tokens: int = 50
     max_tokens: int = 1024   # pool-level truncation; E1 truncates again to 256 at load
 
@@ -72,22 +107,16 @@ CORPORA: dict[str, CorpusSpec] = {
     ),
     "news": CorpusSpec(
         key="news",
-        description="Post-cutoff news articles (2025-26). Clean-room: published after every model's pretraining cutoff.",
-        # VERIFY BEFORE USE. The date partitioning is what makes this corpus
-        # clean-room, so the chosen source must expose a publication date and
-        # must be filtered to post-cutoff months. If none of these resolve,
-        # drop your own scrape at raw_data/e1/news/pool.jsonl (one JSON object
-        # per line with a "text" field) and skip --prepare.
+        description=f"BBC news articles {NEWS_START}..{NEWS_END}. Clean-room: published years after the Pile was assembled.",
         hf_candidates=(
-            ("RealTimeData/bbc_news_alltime", "2025-12", "train", "content"),
-            ("RealTimeData/bbc_latest_news", None, "train", "content"),
+            HFSource("RealTimeData/bbc_news_alltime", _months(NEWS_START, NEWS_END), "train", "content"),
         ),
     ),
     "legal": CorpusSpec(
         key="legal",
         description="Pile-of-Law, ECHR (European Court of Human Rights) opinions subset",
         hf_candidates=(
-            ("pile-of-law/pile-of-law", "echr", "train", "text"),
+            HFSource("pile-of-law/pile-of-law", ("echr",), "train", "text"),
         ),
     ),
 }
@@ -146,7 +175,7 @@ def prepare_hf_corpus(corpus: str, pool_size: int, tokenizer_id: str) -> Path:
     quoted-reply lines and normalises whitespace -- all appropriate for news
     and court opinions too. Header stripping only triggers on RFC-822 leads,
     so it is a no-op outside Enron."""
-    from datasets import load_dataset
+    from datasets import concatenate_datasets, load_dataset
     from transformers import AutoTokenizer
     from tqdm import tqdm
     from prepare_enron import clean
@@ -155,22 +184,40 @@ def prepare_hf_corpus(corpus: str, pool_size: int, tokenizer_id: str) -> Path:
     if spec.hf_candidates is None:
         raise ValueError(f"Corpus {corpus!r} has no HF source; prepare it directly.")
 
-    ds, text_col = None, None
-    for dataset_id, cfg, split, col in spec.hf_candidates:
-        try:
-            print(f"  Trying {dataset_id!r} (config={cfg}, split={split}) ...")
-            ds = load_dataset(dataset_id, cfg, split=split, trust_remote_code=True)
-            text_col = col
-            print(f"    Loaded {len(ds):,} rows; text column={col!r}")
+    ds, text_col, provenance = None, None, {}
+    for source in spec.hf_candidates:
+        parts, used = [], []
+        for cfg in source.configs:
+            try:
+                part = load_dataset(
+                    source.dataset_id, cfg, split=source.split, trust_remote_code=True
+                )
+                parts.append(part)
+                used.append(cfg)
+                print(f"    {source.dataset_id} [{cfg}]: {len(part):,} rows")
+            except Exception as exc:
+                # One missing month should not sink the whole corpus; a source
+                # is only a failure if *every* config it lists is unavailable.
+                print(f"    {source.dataset_id} [{cfg}]: unavailable ({exc})")
+        if parts:
+            ds = parts[0] if len(parts) == 1 else concatenate_datasets(parts)
+            text_col = source.text_column
+            provenance = {
+                "dataset_id": source.dataset_id,
+                "configs_used": used,
+                "configs_requested": list(source.configs),
+                "split": source.split,
+                "text_column": source.text_column,
+            }
+            print(f"  Loaded {len(ds):,} rows from {len(used)} config(s); text column={text_col!r}")
             break
-        except Exception as exc:
-            print(f"    Skipping: {exc}")
+
     if ds is None:
         raise RuntimeError(
-            f"All sources for corpus {corpus!r} failed. Either add a working "
-            f"(dataset_id, config, split, column) tuple to CORPORA[{corpus!r}]"
-            f".hf_candidates, or write your own pool to {pool_path(corpus)} "
-            f"(one JSON object per line with a 'text' field)."
+            f"Every source for corpus {corpus!r} failed. Either add a working "
+            f"HFSource to CORPORA[{corpus!r}].hf_candidates, or write your own "
+            f"pool to {pool_path(corpus)} (one JSON object per line with a "
+            f"'text' field) and skip --prepare."
         )
 
     print("  Cleaning and deduplicating ...")
@@ -203,8 +250,11 @@ def prepare_hf_corpus(corpus: str, pool_size: int, tokenizer_id: str) -> Path:
 
     if len(filtered) < pool_size:
         raise ValueError(
-            f"Only {len(filtered):,} sequences survived for {corpus!r}; need {pool_size:,}. "
-            f"Lower --pool-size or widen the source."
+            f"Only {len(filtered):,} sequences survived for {corpus!r}; need {pool_size:,}.\n"
+            f"Either lower --pool-size (N=2000 members + 2000 non-members needs only "
+            f"~5,000 to leave a usable eval split), or widen the source -- for 'news', "
+            f"move NEWS_START earlier in corpora.py, but not past 2021 without "
+            f"rechecking the contamination claim."
         )
 
     rng = random.Random(SEED)
@@ -213,6 +263,24 @@ def prepare_hf_corpus(corpus: str, pool_size: int, tokenizer_id: str) -> Path:
 
     out = pool_path(corpus)
     _write_pool(pool, out)
+
+    # Provenance sits next to the pool: which configs actually loaded is part
+    # of the clean-room claim, and "we used BBC 2024-01..2025-06" has to be
+    # checkable later rather than reconstructed from memory.
+    provenance.update({
+        "corpus": corpus,
+        "pool_size": len(pool),
+        "n_after_clean_dedup": len(cleaned),
+        "n_after_length_filter": len(filtered),
+        "tokenizer": tokenizer_id,
+        "min_tokens": spec.min_tokens,
+        "max_tokens": spec.max_tokens,
+        "shuffle_seed": SEED,
+    })
+    (out.parent / "provenance.json").write_text(
+        json.dumps(provenance, indent=2), encoding="utf-8"
+    )
+    print(f"  provenance -> {out.parent / 'provenance.json'}")
 
     lengths = [r["n_tokens"] for r in pool]
     print(

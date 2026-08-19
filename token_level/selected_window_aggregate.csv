@@ -1,0 +1,2 @@
+kl_window_seq,pinsker_window_seq,bh_window_seq,min_window_seq,sum_of_token_level_min_bound_over_window,n_members,seed,epochs,window_start_position,window_end_position,has_verified_corpus_match
+100.54928588867188,7.090461405602314,1.0,1.0,26.6431941986084,6000,0,20,33,64,True

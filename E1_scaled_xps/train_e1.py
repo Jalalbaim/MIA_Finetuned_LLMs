@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import csv
 import random
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -73,6 +74,33 @@ from models import (
     resolve_dtype,
 )
 from runspec import RunConfig, expand_grid
+
+
+# Disk budget
+#
+# Kaggle gives ~20GB of writable space. One 410M run costs ~5.7GB in fp16 grid
+# checkpoints plus ~4.9GB of training_state.pt (fp32 weights + two AdamW
+# moment buffers) = ~10.6GB. Three runs therefore do not fit, and the session
+# dies with ENOSPC mid-grid -- taking the notebook's own output file with it,
+# so even the finished results are lost.
+#
+# Two rules keep it bounded:
+#   1. A grid checkpoint is deleted once its log-prob cache is safely written.
+#      The ~20MB cache is what E1c consumes; the 810MB checkpoint is only
+#      needed by E1d/E5d/neighbors, which run on a chosen subset (--keep-epochs).
+#   2. training_state.pt exists only to resume. It is deleted when the grid
+#      completes.
+MIN_FREE_GB = 6.0
+
+
+def free_gb(path: Path | None = None) -> float:
+    return shutil.disk_usage(str(path or _ROOT)).free / 1e9
+
+
+def dir_size_gb(path: Path) -> float:
+    if not path.exists():
+        return 0.0
+    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file()) / 1e9
 
 
 class MemberDataset(Dataset):
@@ -181,9 +209,15 @@ def train_one(
     push_state: bool,
     push_checkpoints: bool,
     cache_batch_size: int,
+    keep_checkpoints: bool = False,
+    keep_epochs: frozenset[int] = frozenset(),
 ) -> bool:
     """Train one RunConfig through its epoch grid. Returns True if the grid
     completed, False if the session budget forced a clean early exit."""
+    if cfg.is_complete():
+        print(f"  [skip] already complete ({len(cfg.cached_epochs())} cached epoch(s))")
+        return True
+
     seed_everything(cfg.seed)
     cfg.save()
 
@@ -227,6 +261,8 @@ def train_one(
     print(f"  Batch       : {spec.per_device_batch} x {accum} accum = {spec.per_device_batch * accum} effective")
     print(f"  Autocast    : {autocast_dtype}  GradScaler: {scaler is not None}")
     print(f"  Epoch grid  : {list(cfg.epoch_grid)}  (max {cfg.max_epochs}, {done_epochs} done)")
+    print(f"  Disk free   : {free_gb():.1f}GB  |  keep checkpoints: "
+          f"{'all' if keep_checkpoints else (sorted(keep_epochs) or 'none (pruned after caching)')}")
 
     # Reference model for inline caching. Small relative to the target, and
     # loading it once here avoids a second full pass over every checkpoint later.
@@ -301,34 +337,62 @@ def train_one(
                 if push_checkpoints:
                     hub.upload_dir(ckpt, hub.remote_ckpt_prefix(cfg.run_id, epoch))
 
-                if cache_inline and not cfg.cache_path(epoch).exists():
+                cached_ok = cfg.cache_path(epoch).exists()
+                if cache_inline and not cached_ok:
                     print(f"    caching log-probs for epoch {epoch} ...")
                     model_ft = load_checkpoint(ckpt, dev_ft, dtype=resolve_dtype(dev_ft))
                     out = build_cache(
                         cfg, epoch, pools, model_ft, model_pre, tokenizer,
                         dev_ft, dev_pre, cfg.cache_path(epoch),
                         batch_size=cache_batch_size,
+                        reference_cache=cfg.reference_cache_path,
                     )
-                    hub.upload_file(out, hub.remote_cache_path(cfg.run_id, epoch, "attack"))
+                    pushed = hub.upload_file(
+                        out, hub.remote_cache_path(cfg.run_id, epoch, "attack")
+                    )
                     del model_ft
                     if dev_ft.type == "cuda":
                         torch.cuda.empty_cache()
-                    note += "  + cache"
+                    cached_ok = out.exists()
+                    note += "  + cache" + ("" if pushed else " (local)")
+
+                # Prune only once the cache is on disk. Without a cache the
+                # checkpoint is the sole record of this epoch, so it is kept
+                # regardless of the flag.
+                if cached_ok and not keep_checkpoints and epoch not in keep_epochs:
+                    size = dir_size_gb(ckpt)
+                    shutil.rmtree(ckpt, ignore_errors=True)
+                    note += f"  ckpt pruned (-{size:.1f}GB)"
 
             save_state(cfg, model, optimizer, scaler, scheduler, epoch, push=False)
-            print(f"  epoch {epoch:>3}  loss {avg_loss:>8.4f}  {elapsed:>7.1f}s  {note}")
+            print(f"  epoch {epoch:>3}  loss {avg_loss:>8.4f}  {elapsed:>7.1f}s  "
+                  f"[free {free_gb():.1f}GB]  {note}")
 
             hours = (time.time() - t_start) / 3600.0
-            if hours >= max_hours and epoch < cfg.max_epochs:
+            budget_spent = hours >= max_hours
+            disk_low = free_gb() < MIN_FREE_GB
+
+            if (budget_spent or disk_low) and epoch < cfg.max_epochs:
+                why = (f"session budget reached ({hours:.2f}h >= {max_hours}h)"
+                       if budget_spent else
+                       f"only {free_gb():.1f}GB free (< {MIN_FREE_GB}GB)")
                 print(
-                    f"\n  Session budget reached ({hours:.2f}h >= {max_hours}h) after epoch {epoch}.\n"
+                    f"\n  Stopping after epoch {epoch}: {why}.\n"
                     f"  Flushing state and exiting cleanly -- rerun the same command to resume."
                 )
                 save_state(cfg, model, optimizer, scaler, scheduler, epoch, push=push_state)
                 completed = False
                 break
         else:
-            save_state(cfg, model, optimizer, scaler, scheduler, cfg.max_epochs, push=push_state)
+            # Grid finished. training_state.pt exists only for resume, and at
+            # 410M it is ~4.9GB -- keeping one per finished run is what filled
+            # the disk. Drop it; the caches are the durable artifact.
+            state_size = cfg.state_path.stat().st_size / 1e9 if cfg.state_path.exists() else 0.0
+            cfg.state_path.unlink(missing_ok=True)
+            cfg.mark_complete()
+            print(f"  Run complete -- {len(cfg.cached_epochs())} cached epoch(s)"
+                  + (f", removed training_state.pt (-{state_size:.1f}GB)" if state_size else "")
+                  + f"  [free {free_gb():.1f}GB]")
     finally:
         log_fh.close()
         del model
@@ -388,6 +452,13 @@ def main() -> None:
     ap.add_argument("--push-checkpoints", action="store_true",
                     help="Upload full checkpoints to the Hub. Off by default -- the caches are "
                          "the artifact E1c needs, and the full grid is ~50GB.")
+    ap.add_argument("--keep-checkpoints", action="store_true",
+                    help="Keep every grid checkpoint on disk. Off by default: a checkpoint is "
+                         "deleted once its log-prob cache is written, because 7 checkpoints plus "
+                         "resume state is ~10.6GB per 410M run and Kaggle has ~20GB total.")
+    ap.add_argument("--keep-epochs", type=int, nargs="*", default=[],
+                    help="Epochs whose checkpoints survive pruning (E1d/E5d/neighbors need the "
+                         "model itself, not just the cache). Example: --keep-epochs 3 10 20")
     ap.add_argument("--no-push-state", action="store_true")
     args = ap.parse_args()
 
@@ -398,9 +469,14 @@ def main() -> None:
     hub.ensure_repo()
 
     print(f"Device : {device}  ({torch.cuda.device_count()} CUDA device(s))")
+    print(f"Disk   : {free_gb():.1f}GB free")
     print(f"Runs   : {len(runs)}")
     for r in runs:
         print(f"  {r.run_id}")
+
+    if not hub.enabled():
+        print("\n[warn] Hub sync is off (set E1_HF_REPO and HF_TOKEN). Caches stay on local\n"
+              "       disk only -- if this session dies, they die with it.")
 
     t_wall = time.time()
     finished, deferred = [], []
@@ -415,6 +491,8 @@ def main() -> None:
             push_state=not args.no_push_state,
             push_checkpoints=args.push_checkpoints,
             cache_batch_size=args.cache_batch_size,
+            keep_checkpoints=args.keep_checkpoints,
+            keep_epochs=frozenset(args.keep_epochs),
         )
         (finished if ok else deferred).append(cfg.run_id)
         if not ok:

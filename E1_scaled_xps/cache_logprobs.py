@@ -132,11 +132,17 @@ def build_cache(
     dev_pre: torch.device,
     out_path: Path,
     batch_size: int = EVAL_BATCH_DEFAULT,
+    reference_cache: Path | None = None,
 ) -> Path:
-    """Forward-pass both models over every pool once and write the .npz.
+    """Forward-pass the models over every pool once and write the .npz.
 
     P_ft and P_pre are kept on separate devices when two GPUs are visible (the
     2xT4 trick), so the two passes do not serialise on one card.
+
+    `reference_cache` points at a stored P_pre pass for this run. P_pre is
+    identical at every epoch, so it is computed on the first checkpoint and
+    reused thereafter -- roughly halving the eval cost, which at 410M dominates
+    training (507s of caching against 59s of training per epoch).
     """
     records: list[dict] = []
     codes: list[int] = []
@@ -162,6 +168,25 @@ def build_cache(
     pad_id = tokenizer.pad_token_id
     t0 = time.time()
 
+    seq_ids = np.array([r["id"] for r in records], dtype=np.int32)
+
+    # Reuse a stored P_pre pass when one exists for exactly these sequences.
+    # The identity check is on the realized (id, split) layout: a reference
+    # cache built for different pools would silently misalign rows.
+    ref_lp: np.ndarray | None = None
+    if reference_cache is not None and Path(reference_cache).exists():
+        with np.load(reference_cache, allow_pickle=False) as rz:
+            if (rz["seq_id"].shape == seq_ids.shape
+                    and np.array_equal(rz["seq_id"], seq_ids)
+                    and np.array_equal(rz["split_code"], np.array(codes, dtype=np.int8))
+                    and rz["token_lp_pre"].shape == (n, T)):
+                ref_lp = rz["token_lp_pre"]
+                token_lp_pre = ref_lp.copy()
+                n_tokens = rz["n_tokens"].copy()
+                print("    reusing stored P_pre pass (reference model is epoch-invariant)")
+            else:
+                print("    [warn] reference cache does not match these pools; recomputing P_pre")
+
     for start in range(0, n, batch_size):
         end = min(start + batch_size, n)
         chunk = encoded[start:end]
@@ -177,9 +202,11 @@ def build_cache(
         ft = _batch_stats(
             model_ft, padded.to(dev_ft), mask.to(dev_ft), want_distribution_stats=True
         )
-        pre = _batch_stats(
-            model_pre, padded.to(dev_pre), mask.to(dev_pre), want_distribution_stats=False
-        )
+        pre = None
+        if ref_lp is None:
+            pre = _batch_stats(
+                model_pre, padded.to(dev_pre), mask.to(dev_pre), want_distribution_stats=False
+            )
 
         for i, length in enumerate(lengths):
             t = length - 1                       # predicted positions
@@ -188,7 +215,8 @@ def build_cache(
             row = start + i
             n_tokens[row] = t
             token_lp_ft[row, :t] = ft["lp"][i, :t].float().cpu().numpy()
-            token_lp_pre[row, :t] = pre["lp"][i, :t].float().cpu().numpy()
+            if pre is not None:
+                token_lp_pre[row, :t] = pre["lp"][i, :t].float().cpu().numpy()
             mu_ft[row, :t] = ft["mu"][i, :t].float().cpu().numpy()
             sigma_ft[row, :t] = ft["sigma"][i, :t].float().cpu().numpy()
             top1_ft[row, :t] = ft["top1"][i, :t].cpu().numpy()
@@ -217,7 +245,7 @@ def build_cache(
         sigma_ft=sigma_ft,
         top1_ft=top1_ft,
         n_tokens=n_tokens,
-        seq_id=np.array([r["id"] for r in records], dtype=np.int32),
+        seq_id=seq_ids,
         split_code=np.array(codes, dtype=np.int8),
         zlib_len=np.array(
             [len(zlib.compress(r["text"].encode("utf-8"))) for r in records],
@@ -227,6 +255,20 @@ def build_cache(
     )
     size_mb = out_path.stat().st_size / 1e6
     print(f"    wrote {out_path.name}  ({n:,} sequences, {size_mb:.1f} MB, {time.time() - t0:.1f}s)")
+
+    # First checkpoint of this run pays for the P_pre pass; store it so the
+    # remaining six grid epochs skip it entirely.
+    if reference_cache is not None and ref_lp is None:
+        Path(reference_cache).parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            reference_cache,
+            token_lp_pre=token_lp_pre,
+            n_tokens=n_tokens,
+            seq_id=seq_ids,
+            split_code=np.array(codes, dtype=np.int8),
+        )
+        print(f"    stored reference P_pre pass -> {Path(reference_cache).name}")
+
     return out_path
 
 
@@ -305,6 +347,7 @@ def cache_run(
         out = build_cache(
             cfg, epoch, pools, model_ft, model_pre, tokenizer,
             dev_ft, dev_pre, cfg.cache_path(epoch), batch_size=batch_size,
+            reference_cache=cfg.reference_cache_path,
         )
         written.append(out)
 

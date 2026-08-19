@@ -75,7 +75,52 @@ checkpoint is saved, so the cache is built right there. This is why
 `--push-checkpoints` is off by default: the full grid is ~50 GB of checkpoints
 versus ~2 GB of caches, and the caches are what E1c consumes. Keep checkpoints
 for the configs that need the model itself — E1d (SPV-MIA), E5d
-(inference-time defenses), and the neighbourhood attack.
+(inference-time defenses), and the neighbourhood attack — via `--keep-epochs`.
+
+### Disk budget on Kaggle
+
+Kaggle gives ~20 GB writable. One 410M run costs:
+
+| artifact | size |
+|---|---|
+| 7 grid checkpoints @ fp16 | 5.7 GB |
+| `training_state.pt` (fp32 weights + 2 AdamW moments = params × 12 B) | 4.9 GB |
+| 7 log-prob caches | 0.15 GB |
+
+That is 10.6 GB per run, so three runs cannot coexist — a first attempt died
+with `ENOSPC` at run 2 epoch 19, which also destroyed the notebook's own output
+file and with it the finished run 1. Two rules keep it bounded:
+
+1. **A grid checkpoint is deleted once its cache is safely written.** The 20 MB
+   cache is the artifact; the 810 MB checkpoint is only needed by
+   E1d/E5d/neighbors. Override with `--keep-checkpoints` or `--keep-epochs`.
+   Pruning never happens if the cache write failed.
+2. **`training_state.pt` is deleted when the grid completes.** It exists only
+   to resume.
+
+Peak usage is then ~6 GB per run and ~0.2 GB persists after it finishes.
+Because pruning removes the evidence a run happened, completion is recorded by
+a `COMPLETED` marker in the run directory — rerunning a finished command skips
+rather than retraining. `cached_epochs()` (not `completed_epochs()`) is what
+tells you what is evaluable.
+
+Training also stops early and checkpoints cleanly when free space drops below
+`MIN_FREE_GB`, the same way it does at `--max-hours`.
+
+**`P_pre` is computed once per run, not once per epoch.** The reference model
+is epoch-invariant, but the first implementation re-ran it at every grid
+checkpoint. At 410M, caching cost 507 s per checkpoint against 59 s of
+training — so this was the single most expensive line in the whole experiment,
+and half of it was redundant. The pass is now stored in
+`cache/<run_id>/reference.npz` and reused, guarded by an exact
+`(seq_id, split_code)` match so a mismatched reference cannot silently
+misalign rows.
+
+**fp16, verified by compute capability.** `torch.cuda.is_bf16_supported()`
+defaults to `including_emulation=True` and returns `True` on a T4 (sm_75),
+which has no bf16 hardware — the first Kaggle run duly selected an emulated
+bfloat16 path. `resolve_dtype` now checks `get_device_capability()[0] >= 8`
+directly, so P100 and T4 get fp16 + live GradScaler and only A100+ gets bf16.
 
 **fp32 master weights, fp16 autocast.** The P100 (sm_60) has no bf16.
 `finetune/train.py` loads weights in bfloat16, autocasts to bfloat16 on top,
