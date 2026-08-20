@@ -27,7 +27,10 @@ where it left off.
     !python E1_scaled_xps/corpora.py --prepare enron --splits --corpus enron
     !python -m pytest E1_scaled_xps/tests/test_e1.py -q             # Week 1 gate
 
-    # ---- cell 3: E1a, one model per session (P100) ----
+    # ---- cell 3: E1a, one model per session ----
+    # Accelerator MUST be "GPU T4 x2", not P100. Kaggle's torch is built for
+    # sm_70+ and the P100 is sm_60, so every CUDA launch on it fails once
+    # training starts. preflight.py refuses to run on an unsupported card.
     !python E1_scaled_xps/kaggle/run_kaggle.py e1a --model pythia-70m
     !python E1_scaled_xps/kaggle/run_kaggle.py e1a --model pythia-160m
     !python E1_scaled_xps/kaggle/run_kaggle.py e1a --model pythia-410m   # ~2.5h/N, split across sessions

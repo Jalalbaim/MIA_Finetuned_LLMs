@@ -61,6 +61,13 @@ class HFSource:
     configs: tuple[str | None, ...]
     split: str
     text_column: str
+    # Raw files to read instead of calling load_dataset. Set this when the
+    # dataset is still script-based: datasets 5.0 removed loading-script
+    # support outright ("Dataset scripts are no longer supported"), and
+    # trust_remote_code no longer exists, so pile-of-law cannot be opened the
+    # normal way on a current image. Its shards are plain jsonl.xz, so we read
+    # them directly and stay version-independent.
+    files: tuple[str, ...] | None = None
 
 
 def _months(start: str, end: str) -> tuple[str, ...]:
@@ -116,10 +123,38 @@ CORPORA: dict[str, CorpusSpec] = {
         key="legal",
         description="Pile-of-Law, ECHR (European Court of Human Rights) opinions subset",
         hf_candidates=(
-            HFSource("pile-of-law/pile-of-law", ("echr",), "train", "text"),
+            HFSource("pile-of-law/pile-of-law", ("echr",), "train", "text",
+                     files=("data/train.echr.jsonl.xz",)),
         ),
     ),
 }
+
+
+def read_hub_jsonl(dataset_id: str, files: tuple[str, ...],
+                   limit: int | None = None) -> list[dict]:
+    """Read raw (optionally xz/gz-compressed) jsonl shards straight off the Hub.
+
+    The escape hatch for script-based datasets. Returns plain dicts, which the
+    caller treats exactly like a datasets.Dataset -- both support len() and
+    iteration with item[text_column]."""
+    import gzip
+    import lzma
+    from huggingface_hub import hf_hub_download
+
+    openers = {".xz": lzma.open, ".gz": gzip.open}
+    rows: list[dict] = []
+    for name in files:
+        local = hf_hub_download(dataset_id, name, repo_type="dataset")
+        opener = openers.get(Path(name).suffix, open)
+        with opener(local, "rt", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                rows.append(json.loads(line))
+                if limit is not None and len(rows) >= limit:
+                    return rows
+    return rows
 
 
 def get_spec(corpus: str) -> CorpusSpec:
@@ -186,6 +221,22 @@ def prepare_hf_corpus(corpus: str, pool_size: int, tokenizer_id: str) -> Path:
 
     ds, text_col, provenance = None, None, {}
     for source in spec.hf_candidates:
+        if source.files:
+            print(f"    {source.dataset_id}: reading {len(source.files)} raw shard(s)")
+            rows = read_hub_jsonl(source.dataset_id, source.files)
+            if rows:
+                ds, text_col = rows, source.text_column
+                provenance = {
+                    "dataset_id": source.dataset_id,
+                    "files": list(source.files),
+                    "loader": "raw_jsonl",
+                    "text_column": source.text_column,
+                }
+                print(f"  Loaded {len(ds):,} rows from raw shards; "
+                      f"text column={text_col!r}")
+                break
+            print(f"    {source.dataset_id}: no rows in raw shards")
+            continue
         parts, used = [], []
         for cfg in source.configs:
             try:
@@ -453,6 +504,24 @@ def probe(corpus: str, n_configs: int = 2) -> bool:
 
     any_ok = False
     for source in spec.hf_candidates:
+        if source.files:
+            print(f"\n{corpus}: {source.dataset_id}  "
+                  f"(raw shards, no loading script)")
+            try:
+                rows = read_hub_jsonl(source.dataset_id, source.files[:1], limit=5)
+            except Exception as exc:
+                print(f"  [{source.files[0]}] FAIL {type(exc).__name__}: {str(exc)[:200]}")
+                continue
+            if not rows:
+                print(f"  [{source.files[0]}] downloaded but empty")
+            elif source.text_column not in rows[0]:
+                print(f"  [{source.files[0]}] rows ok but text column "
+                      f"{source.text_column!r} missing; keys are {sorted(rows[0])}")
+            else:
+                print(f"  [{source.files[0]}] ok -- keys={sorted(rows[0])}, "
+                      f"first row {len(rows[0][source.text_column] or '')} chars")
+                any_ok = True
+            continue
         cfgs = source.configs[:n_configs]
         print(f"\n{corpus}: {source.dataset_id}  "
               f"({len(source.configs)} config(s), probing {len(cfgs)})")

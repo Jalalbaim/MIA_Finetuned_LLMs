@@ -107,6 +107,33 @@ refuses to start otherwise (`--skip-preflight` overrides).
 config and checks the text column exists, so a dead dataset id costs seconds
 rather than an hour into an E1b session.
 
+### Use the T4 x2 accelerator, not the P100
+
+Kaggle's current image ships torch 2.10+cu128, compiled for sm_70 through
+sm_120. The P100 is **sm_60**, so it is outside that range: `torch.cuda` reports
+the card as available and `get_device_capability` answers normally, but every
+kernel launch fails once training starts. `preflight.py` compares the device
+capability against `torch.cuda.get_arch_list()` and then launches a real fp16
+matmul, so this costs seconds rather than a session.
+
+T4 is sm_75, so `resolve_dtype` still selects fp16 + a live GradScaler -- the
+numerics are unchanged from the P100 plan.
+
+### The image moves; the code follows it
+
+The same session also carried transformers 5.0.0 and datasets 5.0.0, both of
+which broke an API E1 used:
+
+- `from_pretrained(torch_dtype=...)` became `dtype=` in transformers 5.
+  `models.py` picks the keyword the installed major version accepts instead of
+  pinning, since pinning is what caused the numpy breakage above.
+- datasets 5 removed loading scripts *and* `trust_remote_code`, so
+  `load_dataset("pile-of-law/pile-of-law", "echr")` now raises
+  `RuntimeError: Dataset scripts are no longer supported`. `corpora.py` reads
+  that dataset's raw `jsonl.xz` shards off the Hub via `read_hub_jsonl`, which
+  depends on no datasets API at all. Set `HFSource.files` to take this path for
+  any other script-based source.
+
 ### Disk budget on Kaggle
 
 Kaggle gives ~20 GB writable. One 410M run costs:

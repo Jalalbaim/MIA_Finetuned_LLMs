@@ -82,11 +82,14 @@ def main() -> int:
                 f"{name} {versions[name]} < required {'.'.join(map(str, minimum))} -- "
                 f"needed for {why}. Install just this one: pip install -q -U {name}")
 
-    # datasets 3.0 removed loading-script support, which pile-of-law (E1b legal)
-    # still relies on via trust_remote_code.
+    # datasets 3.0 removed loading-script support and 5.0 removed
+    # trust_remote_code, so pile-of-law cannot be opened via load_dataset on a
+    # current image. corpora.py reads its raw jsonl.xz shards off the Hub
+    # instead, so this is informational only -- but say so, because the raw
+    # path is easy to mistake for a bug.
     if "datasets" in versions and _ver(importlib.import_module("datasets"))[0] >= 3:
-        print(f"  [warn] datasets {versions['datasets']} dropped loading scripts; "
-              f"pile-of-law (E1b legal corpus) needs 2.x. Enron and news are unaffected.")
+        print(f"  [note] datasets {versions['datasets']} has no loading scripts; the "
+              f"E1b legal corpus loads via raw shards (corpora.read_hub_jsonl).")
 
     if "torch" in versions:
         import torch
@@ -97,6 +100,30 @@ def main() -> int:
             dtype = "bfloat16" if major >= 8 else "float16"
             print(f" gpu              {name} sm_{major}{minor}  {mem:.0f}GB  "
                   f"x{torch.cuda.device_count()}  -> autocast {dtype}")
+
+            # The card being present does not mean this torch build has kernels
+            # for it. Kaggle's torch 2.10+cu128 is compiled for sm_70 and up,
+            # so the P100 (sm_60) is unusable: every CUDA launch fails with "no
+            # kernel image is available for execution on the device", but only
+            # once training starts. Catch it here, in seconds.
+            arches = torch.cuda.get_arch_list()
+            print(f" torch arch list  {' '.join(arches)}")
+            if not any(a.startswith(f"sm_{major}{minor}") for a in arches):
+                problems.append(
+                    f"{name} is sm_{major}{minor}, but this torch build only has kernels "
+                    f"for [{' '.join(arches)}]. Switch the accelerator to GPU T4 x2 "
+                    f"(sm_75) -- do not use the P100 on this image.")
+            else:
+                # Cheap proof that a kernel actually launches.
+                try:
+                    x = torch.randn(64, 64, device="cuda", dtype=torch.float16)
+                    torch.mm(x, x).sum().item()
+                    torch.cuda.synchronize()
+                    print(" cuda smoke test  ok (fp16 matmul)")
+                except Exception as exc:
+                    problems.append(
+                        f"CUDA is reported available but a trivial fp16 matmul failed: "
+                        f"{type(exc).__name__}: {str(exc)[:160]}")
         else:
             print(" gpu              NONE (accelerator is off -- training will crawl)")
             problems.append("No CUDA device. Set Settings > Accelerator before running e1a/e1b.")

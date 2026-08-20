@@ -138,6 +138,20 @@ def needs_grad_scaler(dtype: torch.dtype) -> bool:
 
 # Loading
 
+# transformers 5.0 renamed AutoModel.from_pretrained's `torch_dtype` argument
+# to `dtype`. Kaggle's image ships 5.0.0; the local .venv is on 4.46. Both are
+# supported by picking the keyword the installed version accepts, rather than
+# pinning transformers and re-triggering the requirements.txt trap.
+import transformers as _tf
+
+_TF_MAJOR = int(_tf.__version__.split(".")[0])
+_DTYPE_KEY = "dtype" if _TF_MAJOR >= 5 else "torch_dtype"
+
+
+def _dtype_kwargs(dtype: "torch.dtype | None") -> dict:
+    return {_DTYPE_KEY: dtype if dtype is not None else torch.float32}
+
+
 def load_tokenizer(model_key: str) -> AutoTokenizer:
     tok = AutoTokenizer.from_pretrained(get_spec(model_key).hf_id)
     if tok.pad_token is None:
@@ -155,8 +169,7 @@ def load_base_model(
     because there is no optimizer step."""
     spec = get_spec(model_key)
     model = AutoModelForCausalLM.from_pretrained(
-        spec.hf_id,
-        torch_dtype=dtype if dtype is not None else torch.float32,
+        spec.hf_id, **_dtype_kwargs(dtype)
     ).to(device)
     return model
 
@@ -167,8 +180,7 @@ def load_checkpoint(
     dtype: torch.dtype | None = None,
 ) -> AutoModelForCausalLM:
     model = AutoModelForCausalLM.from_pretrained(
-        str(path),
-        torch_dtype=dtype if dtype is not None else torch.float32,
+        str(path), **_dtype_kwargs(dtype)
     ).to(device)
     model.eval()
     return model
