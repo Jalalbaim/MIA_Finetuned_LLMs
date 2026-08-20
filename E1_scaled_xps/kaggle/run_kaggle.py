@@ -6,15 +6,21 @@ and resumable, so if the session dies you rerun the same cell and it picks up
 where it left off.
 
     # ---- cell 1: setup (all sessions) ----
+    # Do NOT `pip install -r requirements.txt` here. That file pins the local
+    # dev box (numpy==1.26.4, torch==2.5.1, opacus, peft-from-git); on Kaggle it
+    # downgrades numpy under a pandas compiled against numpy 2.x and every
+    # `import pandas` afterwards dies with "numpy.dtype size changed". The base
+    # image already has everything E1 imports -- preflight.py proves it.
     !git clone https://github.com/<you>/MIA_Finetuned_LLMs.git /kaggle/working/mia
     %cd /kaggle/working/mia
-    !pip install -q -r requirements.txt
 
     import os
     from kaggle_secrets import UserSecretsClient
     os.environ["HF_TOKEN"] = UserSecretsClient().get_secret("HF_TOKEN")
     os.environ["E1_HF_REPO"] = "<user>/mia-e1-artifacts"
     os.environ["WANDB_MODE"] = "offline"
+
+    !python E1_scaled_xps/kaggle/preflight.py     # must print READY
 
     # ---- cell 2: one-off data prep ----
     !python data/prepare_enron.py                                  # only if raw_data/pool.jsonl is absent
@@ -27,7 +33,14 @@ where it left off.
     !python E1_scaled_xps/kaggle/run_kaggle.py e1a --model pythia-410m   # ~2.5h/N, split across sessions
 
     # ---- cell 4: E1b cross-domain (needs the news/legal pools first) ----
-    !python E1_scaled_xps/corpora.py --prepare news --splits --corpus news
+    # Probe before preparing: a dead config or renamed column costs seconds
+    # here and an hour mid-session otherwise.
+    !python E1_scaled_xps/corpora.py --probe news
+    !python E1_scaled_xps/corpora.py --probe legal
+    !python E1_scaled_xps/corpora.py --prepare news  --splits --corpus news
+    # pile-of-law/echr has ~7.1k train rows, so 10k cannot be filled; 6000 still
+    # leaves 2000 members + 2000 non-members + a 2000-sequence eval split.
+    !python E1_scaled_xps/corpora.py --prepare legal --splits --corpus legal --pool-size 6000
     !python E1_scaled_xps/kaggle/run_kaggle.py e1b
 
     # ---- cell 5: evaluation (2xT4 accelerator; CPU-bound after caching) ----
@@ -72,9 +85,25 @@ def main() -> None:
     ap.add_argument("--keep-epochs", type=int, nargs="*", default=None,
                     help="Epochs whose checkpoints survive pruning. Needed only for configs "
                          "later fed to E1d / E5d / the neighbourhood attack.")
+    ap.add_argument("--skip-preflight", action="store_true",
+                    help="Run even if the environment check fails.")
     args = ap.parse_args()
 
     py = sys.executable
+
+    # A broken env (typically numpy downgraded by requirements.txt) otherwise
+    # surfaces hours in, as an ImportError inside a worker.
+    if args.stage in ("e1a", "e1b", "cache", "eval"):
+        if _run([py, str(_E1_DIR / "kaggle" / "preflight.py")]) != 0:
+            if args.skip_preflight:
+                print("[preflight] failed; continuing because --skip-preflight was given.",
+                      file=sys.stderr)
+            else:
+                print("\n[preflight] Environment is not ready -- see above. "
+                      "Refusing to start; pass --skip-preflight to override.",
+                      file=sys.stderr)
+                raise SystemExit(2)
+
     if not os.environ.get("E1_HF_REPO"):
         print("[warn] E1_HF_REPO is unset -- artifacts stay local and will be lost "
               "when this session ends. Set it in cell 1.")

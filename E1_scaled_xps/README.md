@@ -23,6 +23,7 @@ and what fraction of it do they recover as a function of KL?
 | `eval_e1.py` | E1c: assembles `results/e1_metrics.csv` and runs the RQ1 check. |
 | `neighbors.py` | Neighbour generation for the neighbourhood attack (subset only). |
 | `kaggle/run_kaggle.py` | Session driver; copy-paste cells in its docstring. |
+| `kaggle/preflight.py` | Verifies a session can run E1. Changes nothing. |
 | `tests/test_e1.py` | The Week-1 "harness validated" gate. 28 tests, CPU, seconds. |
 
 ## Reused from the workshop pipeline
@@ -76,6 +77,35 @@ checkpoint is saved, so the cache is built right there. This is why
 versus ~2 GB of caches, and the caches are what E1c consumes. Keep checkpoints
 for the configs that need the model itself — E1d (SPV-MIA), E5d
 (inference-time defenses), and the neighbourhood attack — via `--keep-epochs`.
+
+### Do not pip install requirements.txt on Kaggle
+
+`requirements.txt` describes the local Windows `.venv`, including `opacus` and a
+git checkout of `peft` that E1 never imports. E1 imports only torch,
+transformers, datasets, huggingface_hub, numpy, scipy, scikit-learn and pandas,
+and the Kaggle base image already ships all eight at working versions.
+
+Installing it is actively harmful: the `numpy==1.26.4` pin downgrades numpy
+underneath the image's pandas, which was compiled against numpy 2.x headers.
+Every later `import pandas` -- so also `datasets`, `transformers`,
+`sklearn` -- then dies at import with
+
+    ValueError: numpy.dtype size changed, may indicate binary incompatibility.
+                Expected 96 from C header, got 88 from PyObject
+
+96 vs 88 bytes is the size of `PyArray_Descr` in numpy 2.x vs 1.x. There is no
+recovery inside the session short of a factory reset, because the downgrade has
+already happened.
+
+`kaggle/preflight.py` replaces the install: it imports everything E1 needs,
+reports versions, GPU and compute capability, free disk, and whether
+`E1_HF_REPO`/`HF_TOKEN` are set, then prints `READY` or an itemised list of
+problems. `run_kaggle.py` runs it before every training and eval stage and
+refuses to start otherwise (`--skip-preflight` overrides).
+
+`corpora.py --probe <corpus>` is the same idea for data: it pulls five rows per
+config and checks the text column exists, so a dead dataset id costs seconds
+rather than an hour into an E1b session.
 
 ### Disk budget on Kaggle
 

@@ -1,3 +1,12 @@
+# Local development environment (Windows, .venv). Reproduces the workshop
+# pipeline end to end, including the parts E1 does not use (opacus, peft-from-git).
+#
+# DO NOT install this on Kaggle. The numpy pin below downgrades the base image
+# underneath a pandas compiled against numpy 2.x headers, and every subsequent
+# `import pandas` -- so also datasets, transformers, sklearn -- fails with
+#     ValueError: numpy.dtype size changed ... Expected 96 from C header, got 88
+# The Kaggle image already satisfies everything E1 imports; run
+# E1_scaled_xps/kaggle/preflight.py to verify a session instead of installing.
 torch==2.5.1                  # must be >=2.4 for torch.library.register_fake (torchvision, pulled in transitively by transformers, requires it)
 torchvision==0.20.1           # matched pair for torch 2.5.1; not used directly, but transformers' lazy imports (e.g. BloomPreTrainedModel via peft.utils.constants) load it
 transformers==4.46.3          # GPT-Neo 125M weights + tokenizer; must be >=4.44 for EncoderDecoderCache (peft 0.19.1 import-time dependency)

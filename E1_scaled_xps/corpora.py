@@ -430,6 +430,53 @@ def contamination_rate(
 
 # Entry point
 
+def probe(corpus: str, n_configs: int = 2) -> bool:
+    """Cheaply check that a corpus's HF sources still resolve.
+
+    Downloads a handful of rows per config rather than the whole split, so a
+    dead dataset id or a renamed column costs seconds instead of an hour into
+    an E1b session. Returns True if any source produced rows.
+
+    This exists because the obvious hand-written probe -- load_dataset on a
+    guessed config name -- is where both known E1b failures happened: a config
+    ("2025-12") that the dataset does not have, and an environment broken by
+    installing requirements.txt on Kaggle.
+    """
+    from datasets import load_dataset
+
+    spec = get_spec(corpus)
+    if spec.hf_candidates is None:
+        ok = pool_path(corpus).exists()
+        print(f"{corpus}: no HF source; local pool {'present' if ok else 'ABSENT'} "
+              f"at {pool_path(corpus)}")
+        return ok
+
+    any_ok = False
+    for source in spec.hf_candidates:
+        cfgs = source.configs[:n_configs]
+        print(f"\n{corpus}: {source.dataset_id}  "
+              f"({len(source.configs)} config(s), probing {len(cfgs)})")
+        for cfg in cfgs:
+            try:
+                part = load_dataset(source.dataset_id, cfg,
+                                    split=f"{source.split}[:5]", trust_remote_code=True)
+            except Exception as exc:
+                print(f"  [{cfg}] FAIL {type(exc).__name__}: {str(exc)[:200]}")
+                continue
+            cols = part.column_names
+            if source.text_column not in cols:
+                print(f"  [{cfg}] rows ok but text column {source.text_column!r} "
+                      f"missing; columns are {cols}")
+                continue
+            chars = len(part[0][source.text_column] or "")
+            print(f"  [{cfg}] ok -- columns={cols}, first row {chars} chars")
+            any_ok = True
+    if not any_ok:
+        print(f"\n{corpus}: every probed source failed. Fix "
+              f"CORPORA[{corpus!r}].hf_candidates before spending a session.")
+    return any_ok
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Prepare E1 corpora and freeze membership splits.")
     ap.add_argument("--prepare", choices=sorted(CORPORA), default=None,
@@ -441,11 +488,16 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=SEED)
     ap.add_argument("--tokenizer", default="EleutherAI/pythia-410m-deduped",
                     help="Tokenizer used for length filtering (all Pythia sizes share one)")
+    ap.add_argument("--probe", default=None, choices=sorted(CORPORA),
+                    help="Check this corpus's HF sources resolve, without downloading them")
     ap.add_argument("--contamination", default=None, choices=sorted(CORPORA),
                     help="Corpus to check for n-gram overlap")
     ap.add_argument("--reference", default=None, choices=sorted(CORPORA),
                     help="Reference corpus for --contamination")
     args = ap.parse_args()
+
+    if args.probe:
+        raise SystemExit(0 if probe(args.probe) else 1)
 
     if args.prepare == "enron":
         prepare_enron(args.pool_size)
@@ -472,7 +524,7 @@ def main() -> None:
         for k, v in stats.items():
             print(f"  {k:<32} {v}")
 
-    if not (args.prepare or args.splits or args.contamination):
+    if not (args.prepare or args.splits or args.contamination or args.probe):
         ap.print_help()
 
 
