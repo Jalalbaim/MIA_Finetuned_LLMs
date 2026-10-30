@@ -5,6 +5,12 @@ Usage:
     python finetune/train.py                     # all seeds × all N
     python finetune/train.py --seed 0 --n 2000   # single combination
     python finetune/train.py --seed 0            # seed 0, all N values
+
+Null control (same members, different training randomness):
+    python finetune/train.py --seed 0 --n 2000 --train_seed 1 --max_epoch 1
+    -> checkpoints/gpt_neo_ft_N2000_seed0_trainseed1_epoch1
+--seed selects the member split; --train_seed (default: = --seed) seeds the
+training RNG (data order; dropout if any). Default behaviour is unchanged.
 """
 
 import sys
@@ -85,14 +91,18 @@ def save_pretrained_reference() -> None:
 
 # Fine-tuning 
 
-def finetune(seed: int, n_members: int, device: torch.device) -> list[Path]:
+def finetune(seed: int, n_members: int, device: torch.device,
+             train_seed: int | None = None, max_epoch: int | None = None,
+             out_dir: Path | None = None) -> list[Path]:
     """
     Train a fresh GPT-Neo on members for max(EPOCH_SWEEP) epochs.
     Saves full model + tokenizer at each epoch in EPOCH_SWEEP (skips if checkpoint exists).
     Logs per-epoch loss to logs/train_N{n}_seed{seed}.csv.
     Returns list of checkpoint Paths actually written this run.
     """
-    torch.manual_seed(seed)
+    torch.manual_seed(seed if train_seed is None else train_seed)
+    tag = f"N{n_members}_seed{seed}" + ("" if train_seed is None else f"_trainseed{train_seed}")
+    out_dir = CKPT_DIR if out_dir is None else out_dir
 
     # Data
     members, _, _ = load_split(seed, n_members)
@@ -123,8 +133,8 @@ def finetune(seed: int, n_members: int, device: torch.device) -> list[Path]:
         weight_decay=FINETUNE["weight_decay"],
     )
 
-    max_epochs  = max(EPOCH_SWEEP)
-    epoch_set   = set(EPOCH_SWEEP)
+    max_epochs  = max(EPOCH_SWEEP) if max_epoch is None else max_epoch
+    epoch_set   = {e for e in EPOCH_SWEEP if e <= max_epochs} | {max_epochs}
     grad_accum  = FINETUNE.get("grad_accum_steps", 1)
     saved: list[Path] = []
 
@@ -133,7 +143,7 @@ def finetune(seed: int, n_members: int, device: torch.device) -> list[Path]:
 
     # CSV log
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = LOG_DIR / f"train_N{n_members}_seed{seed}.csv"
+    log_path = LOG_DIR / f"train_{tag}.csv"
     log_fh   = log_path.open("w", newline="", encoding="utf-8")
     writer   = csv.writer(log_fh)
     writer.writerow(["epoch", "train_loss", "elapsed_s"])
@@ -172,7 +182,7 @@ def finetune(seed: int, n_members: int, device: torch.device) -> list[Path]:
 
             note = ""
             if epoch in epoch_set:
-                ckpt = CKPT_DIR / f"gpt_neo_ft_N{n_members}_seed{seed}_epoch{epoch}"
+                ckpt = out_dir / f"gpt_neo_ft_{tag}_epoch{epoch}"
                 if (ckpt / "config.json").exists():
                     note = f"skip (exists): {ckpt.name}"
                 else:
@@ -197,7 +207,15 @@ def main() -> None:
                         help="Single seed to run (default: all SEEDS from config)")
     parser.add_argument("--n",   type=int, default=None,
                         help="Single N_members to run (default: all CORPUS_SIZES from config)")
+    parser.add_argument("--train_seed", type=int, default=None,
+                        help="Training RNG seed (default: = --seed). Requires single --seed and --n.")
+    parser.add_argument("--max_epoch", type=int, default=None,
+                        help="Stop after this epoch (default: max(EPOCH_SWEEP)); always saved.")
+    parser.add_argument("--out_dir", type=Path, default=None,
+                        help="Checkpoint output dir (default: CKPT_DIR from config).")
     args = parser.parse_args()
+    if args.train_seed is not None and (args.seed is None or args.n is None):
+        parser.error("--train_seed requires --seed and --n")
 
     seeds = [args.seed] if args.seed is not None else SEEDS
     ns    = [args.n]    if args.n    is not None else CORPUS_SIZES
@@ -223,7 +241,8 @@ def main() -> None:
             print(f"  Run {combo}/{n_combos}  |  seed={seed}  N={n:,}")
             print(f"{'='*64}")
             print(f"Starting fine-tuning for seed={seed} and N={n:,} ...")
-            ckpts = finetune(seed, n, device)
+            ckpts = finetune(seed, n, device, train_seed=args.train_seed,
+                             max_epoch=args.max_epoch, out_dir=args.out_dir)
             all_saved.extend(ckpts)
 
     total = time.time() - t_wall
