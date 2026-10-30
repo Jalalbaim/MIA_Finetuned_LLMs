@@ -122,9 +122,10 @@ def finetune(seed: int, n_members: int, device: torch.device,
     )
 
     # Model + optimiser (fresh per run)
-    # bfloat16: same 2-byte footprint as float16 but fp32 dynamic range, so no
-    # overflow/NaN in attention scores or cross-entropy; no GradScaler needed.
-    load_dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+    # Mixed precision: fp32 master weights + bf16 autocast (below). Loading the
+    # weights themselves in bf16 loses updates of size ~lr*grad (< bf16 resolution
+    # ~2^-8 relative) and saves rounded BF16 checkpoints. Always keep fp32 weights.
+    load_dtype = torch.float32
     model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, torch_dtype=load_dtype).to(device)
     model.gradient_checkpointing_enable()   # trade recompute for activation memory
     optimizer = AdamW(
